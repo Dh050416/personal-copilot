@@ -431,3 +431,88 @@ async def test_intent_keeps_core_only_for_unrelated_chat(ctx):
     system = llm._seen_systems[0]
     assert '【流程·' not in system
     assert '铁律' in system
+
+
+def parallel_message(calls):
+    """构造一条携带多个并行 tool_call 的 AIMessage（真实模型的常见行为）。"""
+    return AIMessage(content='', tool_calls=[
+        {'name': name, 'args': args, 'id': call_id, 'type': 'tool_call'}
+        for name, args, call_id in calls
+    ])
+
+
+@pytest.mark.asyncio
+async def test_parallel_read_write_batch_does_not_bypass_approval(ctx):
+    """回归：一条消息里「读 + 写」并行提交时，写操作不得绕过 HITL 审批。
+
+    路由只按 calls[0] 判定是否审批，若 run_tools 遍历全部调用，
+    第二个调用（写工具）会直接落库。混合批必须只执行第一个调用。
+    """
+    await seed_bills(ctx['db'])
+    graph = graph_for(fake_llm(
+        parallel_message([('query_bill', {'category': '餐饮'}, 'p1'),
+                          ('create_tracking_card',
+                           {'bill_id': 2, 'category': '餐饮', 'purpose': '报销'}, 'p2')]),
+        AIMessage(content='已查到餐饮记录；建卡需要单独确认。'),
+    ), ctx['tools'])
+    result = await run_to_end(graph, initial_input('run-p1', '查餐饮并给我建卡'),
+                              {'configurable': {'thread_id': 'run-p1'}})
+
+    # 1) 全程没有产生审批事件（写工具没走到 approve，也就不该被执行）
+    assert not [e for e in result['events'] if e['type'] == 'approval_created']
+    assert not [i for i in result.get('__interrupt__') or []
+                if isinstance(getattr(i, 'value', None), dict)
+                and i.value.get('kind') == 'tool_approval']
+    # 2) 只读调用正常执行，写调用被策略拦下
+    results = {e['payload']['tool']: e['payload']['result']
+               for e in result['events'] if e['type'] == 'tool_result'}
+    assert results['query_bill']['ok'] is True
+    assert results['create_tracking_card']['ok'] is False
+    assert results['create_tracking_card']['error']['code'] == 'PARALLEL_WRITE_BLOCKED'
+    assert results['create_tracking_card']['error']['stage'] == 'policy'
+    # 3) 数据库里没有任何卡片落库
+    async with ctx['db'].sessions() as session:
+        assert list(await session.scalars(select(TrackingCard))) == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_write_first_still_requires_approval(ctx):
+    """写工具排在 calls[0]：仍走审批；同批其余调用被拦下并回执，不静默丢弃。"""
+    await seed_bills(ctx['db'])
+    graph = graph_for(fake_llm(
+        parallel_message([('create_tracking_card',
+                           {'bill_id': 2, 'category': '餐饮', 'purpose': '报销'}, 'w1'),
+                          ('query_bill', {'category': '餐饮'}, 'w2')]),
+        AIMessage(content='卡片已创建。'),
+    ), ctx['tools'])
+    config = {'configurable': {'thread_id': 'run-p2'}}
+    result = await graph.ainvoke(initial_input('run-p2', '给那笔咖啡建卡再查账单'), config)
+    payload = interrupted_payload(result)
+    assert payload['kind'] == 'tool_approval'
+    assert payload['tool'] == 'create_tracking_card'
+
+    result = await run_to_end(graph, resume('approve', payload['approval_id']), config)
+    results = {e['payload']['tool']: e['payload']['result']
+               for e in result['events'] if e['type'] == 'tool_result'}
+    assert results['create_tracking_card']['ok'] is True
+    assert results['query_bill']['error']['code'] == 'PARALLEL_WRITE_BLOCKED'
+    async with ctx['db'].sessions() as session:
+        cards = list(await session.scalars(select(TrackingCard)))
+        assert len(cards) == 1 and cards[0].bill_id == 2
+
+
+@pytest.mark.asyncio
+async def test_parallel_reads_all_execute(ctx):
+    """全只读的并行批不受影响：多个只读调用照常各自执行。"""
+    await seed_bills(ctx['db'])
+    graph = graph_for(fake_llm(
+        parallel_message([('query_bill', {'category': '餐饮'}, 'r1'),
+                          ('list_tracking_cards', {}, 'r2')]),
+        AIMessage(content='查询完成。'),
+    ), ctx['tools'])
+    result = await run_to_end(graph, initial_input('run-p3', '查餐饮和看板'),
+                              {'configurable': {'thread_id': 'run-p3'}})
+    results = [e['payload']['result'] for e in result['events'] if e['type'] == 'tool_result']
+    assert [r['ok'] for r in results] == [True, True]
+    assert all(r['error'] is None for r in results)
+    assert not [e for e in result['events'] if e['type'] == 'approval_created']

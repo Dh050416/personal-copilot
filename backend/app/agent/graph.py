@@ -10,6 +10,10 @@
 - HITL：写工具（WRITE_TOOLS）在进入 tools 前经 approve 节点 interrupt（子图内同样适用，
   interrupt 全局冒泡到顶层调用者），前端拿到 approval_created 事件弹确认卡，
   resume(approve/reject) 后继续或回退。
+- HITL 不变量（并行调用）：一条 AIMessage 内的并行工具调用，只允许「全部只读」或
+  「仅含一个写工具」。路由节点按 calls[0] 决定是否审批，若 run_tools 遍历全部调用，
+  「读 + 写」混合批会让写操作绕过审批直接落库；因此 run_tools 对混合批只执行第一个
+  调用，其余以 PARALLEL_WRITE_BLOCKED 回执退回模型，令其逐个重发。
 - 事件协议：与旧版前端完全兼容——节点把事件增量写入 state['events']，
   chat.py 用 stream_mode='updates' 增量推送；interrupt 由 chat.py 转 approval_created。
 - schema 校验：工具调用由 args_schema 强校验，失败转结构化 validation 错误回喂模型。
@@ -463,6 +467,15 @@ def make_run_tools_node(tools, write_tools, *, tool_timeout=None, retry_backoff=
         done = state.get('tool_calls_done', 0)
         update = {'messages': messages, 'events': events}
 
+        # HITL 不变量：见模块 docstring。路由只看 calls[0]，而这里原本遍历全部调用，
+        # 「读 + 写」混合批会让写工具绕过 approve 直接执行。混合批一律只放行第一个调用，
+        # 其余不执行、但必须补 ToolMessage（OpenAI 协议要求每个 tool_call 都有回执）。
+        all_calls = list(last.tool_calls)
+        if len(all_calls) > 1 and any(c['name'] in write_tools for c in all_calls):
+            calls, dropped = all_calls[:1], all_calls[1:]
+        else:
+            calls, dropped = all_calls, []
+
         def emit_success(content, artifact_data, call_id, name, args, invocation_id,
                          cached_hit=False, attempts=1):
             """成功路径的统一出口：构造 ToolMessage、发事件、更新查询记忆。"""
@@ -484,7 +497,7 @@ def make_run_tools_node(tools, write_tools, *, tool_timeout=None, retry_backoff=
                 }
                 update['last_query_at'] = now_iso()
 
-        for call in last.tool_calls:
+        for call in calls:
             name, args, call_id = call['name'], call['args'], call['id']
             spec = tool_map[name]
             invocation_id = uuid4().hex
@@ -586,6 +599,18 @@ def make_run_tools_node(tools, write_tools, *, tool_timeout=None, retry_backoff=
                 if idem_token is not None:
                     _IDEMPOTENCY_KEY.reset(idem_token)
             done += 1  # 每个工具调用（无论成败）都计一次成本
+        # 混合批被拦下的调用：不执行，但补结构化错误回执（同时满足协议配对与模型自纠正）
+        for call in dropped:
+            name, call_id = call['name'], call['id']
+            result = {'ok': False, 'tool': name, 'invocation_id': uuid4().hex, 'attempts': 0,
+                      'data': None,
+                      'error': {'code': 'PARALLEL_WRITE_BLOCKED',
+                                'message': f'写操作 {name} 不能与其他工具调用并行提交，本次未执行；'
+                                           '请单独发出这一个调用（会先经用户确认）。',
+                                'stage': 'policy', 'retryable': True, 'details': None}}
+            messages.append(ToolMessage(
+                content=result['error']['message'], tool_call_id=call_id, name=name, status='error'))
+            events.append(_event('tool_result', {'tool': name, 'result': result}))
         update['tool_calls_done'] = done
         return update
 
