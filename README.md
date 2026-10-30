@@ -203,6 +203,29 @@ python scripts/gen_sample_bills.py     # 生成 samples/sample_bills.xlsx
 
 ---
 
+## 评估
+
+33 条用例覆盖查询 / 建卡 / 日程 / 看板 / 搜索 / 记忆 / 拒答 / 多轮八类，
+走**生产同一条图链路**（真实工具 + 真实审批 + 真实拦截）跑模型，
+输出六项指标：工具选择准确率、参数准确率、审批触达率、**越权写操作数（必须为 0）**、
+平均工具调用次数、p50/p95 延迟与 tokens。
+
+```bash
+cd backend
+python -m evals --limit 3                 # 冒烟
+python -m evals                           # 全量，报告写入 evals/results/latest.md
+python -m evals --json-out results.json   # 跨版本比对的机器可读结果
+```
+
+指标口径、「结果怎么读」、以及加用例的规则见 [docs/evals.md](docs/evals.md)。
+指标算法本身有 18 条离线单测（`backend/tests/test_evals.py`）锁住——
+`score` / `aggregate` 是纯函数，不联网也能验证算得对不对。
+
+> 报告里的数字请用你的模型实跑后再写进 README 或简历。
+> `--limit 3` 冒烟通过 ≠ 全量通过，换模型、换提示词都要重跑。
+
+---
+
 ## 建议的第一轮实验
 
 先生成示例账单并在前端导入（或用你自己的 `.xlsx`），然后按顺序观察：
