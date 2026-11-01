@@ -11,6 +11,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from app.agent.graph import initial_input
+from app.observability import langfuse_callbacks
 from app.schemas import ChatRequest, ResumeRequest
 
 router = APIRouter(prefix='/api', tags=['chat'])
@@ -125,6 +126,12 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
             queue.put_nowait(_sse(run_id, {'type': 'stream', 'payload': {'delta': text}}))
 
         config = {'configurable': {'thread_id': run_id, 'stream_sink': stream_sink}}
+        # Langfuse 追踪：handler 放在 RunnableConfig 里，LangGraph 会自动沿调用链
+        # 下传给每个节点内的 LLM 与工具调用，不需要去 graph.py 逐节点埋点。
+        # 未启用时是空列表，此时干脆不写这个键，避免给 langgraph 传空 callbacks。
+        callbacks = langfuse_callbacks()
+        if callbacks:
+            config['callbacks'] = callbacks
         # 步数护栏：langgraph 1.x 在运行时通过 config 传 recursion_limit，
         # 超限抛 GraphRecursionError（下方转友好 final），防止模型陷入工具循环停不下来
         if max_steps:

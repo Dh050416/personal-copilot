@@ -15,11 +15,13 @@ from app.api.events import router as events_router
 from app.config import Settings
 from app.data.db import Database
 from app.data.models import AgentMemory
+from app.observability import flush as langfuse_flush, init_langfuse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
+    init_langfuse(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     db = Database(settings.data_dir / 'personal_copilot.db')
     await db.initialize()
@@ -67,6 +69,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        langfuse_flush()
         await checkpoint_cm.__aexit__(None, None, None)
         await db.close()
 

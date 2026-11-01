@@ -11,6 +11,10 @@ langgraph>=1.0,<2
 langgraph-checkpoint-sqlite>=3.0,<4
 openai>=1.60,<3
 python-multipart>=0.0.18,<1
+langfuse>=3.0,<4
+# langfuse 的 LangChain/LangGraph 集成强依赖 langchain 主包（只装 langchain-core 会在
+# import langfuse.langchain 时直接 ModuleNotFoundError）
+langchain>=1.0,<2
 
 # ----- 开发依赖 -----
 pytest>=8.3,<10

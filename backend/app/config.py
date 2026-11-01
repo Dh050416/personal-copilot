@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     # 环境变量用 JSON 数组：CORS_ORIGINS=["http://example.com:5173"]
     cors_origins: list[str] = ['http://127.0.0.1:5173', 'http://localhost:5173']
 
+    # ----- Langfuse 可观测性（可选）-----
+    # 三个变量都留空时追踪整体关闭，对主流程零影响、零网络请求。
+    # 自托管时 host 必须写 127.0.0.1 而不是 localhost：
+    # 本机 localhost 优先解析到 IPv6 ::1，而 ::1:3000 被 dllhost.exe 占着，会连不上。
+    langfuse_public_key: str = ''
+    langfuse_secret_key: str = ''
+    langfuse_host: str = 'http://127.0.0.1:3000'
+
     @model_validator(mode='after')
     def privacy_boundary(self):
         if self.model_provider == 'openai_compatible':
