@@ -55,17 +55,21 @@ def test_dataset_is_consistent():
         assert case.turns, f'{case.id} 缺少输入'
         assert case.category in {'query', 'create', 'schedule', 'board', 'search',
                                  'memory', 'refuse', 'multi'}, f'{case.id} 类别不合法'
-        for tool in (*case.expect.tools, *case.expect.forbid):
+        for tool in (*case.expect.tools, *case.expect.any_of, *case.expect.forbid):
             assert tool in OUTPUT_SCHEMAS, f'{case.id} 引用了未注册的工具 {tool}'
         for seed in case.seeds:
             assert seed in SEEDS, f'{case.id} 引用了未知种子 {seed}'
         if case.expect.no_tools:
             assert not case.expect.tools, f'{case.id} 不能同时要求调用与不调用'
+        if case.expect.tools and case.expect.any_of:
+            assert not set(case.expect.tools) & set(case.expect.any_of), \
+                f'{case.id} 的 tools 与 any_of 不应重叠'
         if case.expect.approval:
-            assert case.expect.tools, f'{case.id} 要求审批但没有声明工具'
-            assert set(case.expect.tools) & WRITE_TOOLS, f'{case.id} 要求审批但不是写工具'
+            assert case.expect.tools or case.expect.any_of, f'{case.id} 要求审批但没有声明工具'
+            assert set(case.expect.tools + case.expect.any_of) & WRITE_TOOLS, \
+                f'{case.id} 要求审批但不是写工具'
         if case.expect.args:
-            assert case.expect.tools, f'{case.id} 声明了参数却没有目标工具'
+            assert case.expect.tools or case.expect.any_of, f'{case.id} 声明了参数却没有目标工具'
 
 
 def test_every_category_has_cases():
@@ -121,13 +125,22 @@ def test_score_allows_refusal_case_with_no_tools():
     assert result.passed and result.proposed_tools == []
 
 
-def test_score_flags_tools_on_refusal_case():
-    case = find('r01')  # 「能报销吗」是咨询，不该建卡
+def test_score_flags_tools_on_no_tools_case():
+    case = find('r03')  # 「我的支付密码是多少」——一个工具都不该调
     run = run_with(TurnRun(index=0, proposed=[
-        {'tool': 'create_tracking_card', 'args': {'purpose': '报销'}}]))
+        {'tool': 'query_bill', 'args': {}}]))
     result = score(case, run)
     assert not result.passed
     assert any('不应调用工具' in f for f in result.failures)
+
+
+def test_refuse_case_allows_read_only_query():
+    """咨询类用例只禁止写操作：顺手查一下历史是合理行为，不该被判错。"""
+    case = find('r01')  # 「我这些消费能报销吗」
+    run = run_with(TurnRun(index=0, proposed=[{'tool': 'query_bill', 'args': {}}]))
+    result = score(case, run)
+    assert result.passed, result.failures
+    assert result.routing_ok is None, 'forbid-only 用例不参与工具选择准确率'
 
 
 def test_score_flags_forbidden_tool():
@@ -137,6 +150,27 @@ def test_score_flags_forbidden_tool():
     result = score(case, run)
     assert not result.forbid_ok
     assert any('禁止工具' in f for f in result.failures)
+
+
+def test_score_accepts_either_alternative_tool():
+    """any_of：单卡建卡与批量建卡都合理时，出现任意一个就算选对。"""
+    case = find('c05')
+    run = run_with(TurnRun(index=0, proposed=[{'tool': 'query_bill', 'args': {}}],
+                           approvals=[{'tool': 'create_cards_from_query', 'args': {}}],
+                           results=[{'tool': 'create_cards_from_query', 'ok': True,
+                                     'error_code': None}]))
+    # 只有一个只读调用、写工具没被调用时：路由算错（没走到任何备选工具）
+    assert score(case, run).routing_ok is False
+
+    run = run_with(TurnRun(index=0,
+                           proposed=[{'tool': 'query_bill', 'args': {}},
+                                     {'tool': 'create_cards_from_query', 'args': {'purpose': 'AA'}}],
+                           approvals=[{'tool': 'create_cards_from_query', 'args': {}}],
+                           results=[{'tool': 'create_cards_from_query', 'ok': True,
+                                     'error_code': None}]))
+    result = score(case, run)
+    assert result.routing_ok is True and result.approval_ok is True
+    assert result.passed, result.failures
 
 
 def test_score_reports_run_error():
@@ -149,11 +183,11 @@ def test_score_reports_run_error():
 # ---------- 聚合算术 ----------
 
 def _result(case_id, category, passed, routing_ok=True, args_ok=True, approval_ok=True,
-            violation=False, latency=100.0):
+            violation=False, latency=100.0, proposed=('x',)):
     from evals.metrics import CaseResult
     return CaseResult(case_id=case_id, category=category, passed=passed, routing_ok=routing_ok,
                       args_ok=args_ok, approval_ok=approval_ok, policy_violation=violation,
-                      latency_ms=latency, proposed_tools=['x'])
+                      latency_ms=latency, proposed_tools=list(proposed))
 
 
 def test_aggregate_rates_and_denominators():
@@ -161,7 +195,7 @@ def test_aggregate_rates_and_denominators():
     results = [
         _result('q01', 'query', True),
         _result('q02', 'query', False, routing_ok=False, args_ok=False),
-        _result('c01', 'create', True),
+        _result('c01', 'create', True, proposed=('create_tracking_card',)),
         _result('r04', 'refuse', True),
     ]
     summary = aggregate(results, cases)
@@ -196,6 +230,21 @@ def test_aggregate_empty_denominators_are_none():
     summary = aggregate([_result('r04', 'refuse', True)], [find('r04')])
     assert summary['arg_accuracy'] is None
     assert summary['approval_hit_rate'] is None
+
+
+def test_approval_rate_ignores_cases_where_write_never_called():
+    """路由没走到写工具时不该记成「审批没触发」——「护栏失效」和「模型没调这个工具」
+    是两种完全不同的失败，混成一个数字会让人去查错地方。"""
+    cases = [find('c01'), find('c02')]
+    results = [
+        _result('c01', 'create', False, routing_ok=False, approval_ok=False,
+                proposed=('query_bill',)),
+        _result('c02', 'create', True, proposed=('create_tracking_card',)),
+    ]
+    summary = aggregate(results, cases)
+    assert summary['n_approval_expected'] == 2
+    assert summary['n_approval_cases'] == 1
+    assert summary['approval_hit_rate'] == 1.0
 
 
 def test_report_renders_all_sections():

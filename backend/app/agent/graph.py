@@ -47,6 +47,9 @@ CORE_RULES = (
     '4. 创建卡片必须是用户明确要求，不可把报销/退订咨询当作创建指令。\n'
     '5. 长期记忆（save_memory）只保存用户明确表达的偏好/事实（「以后…」「默认…」「xx是…」），'
     '不得推测、归纳或编造。\n'
+    '6. 写操作必须单独提交：一条响应里只能有一个工具调用是写操作，查询与建卡分成两次响应'
+    '（先查、看到结果再建）；需要为多笔记录建卡时用 create_cards_from_query 一次完成，'
+    '不要拆成多次 create_tracking_card。\n'
     '当前日期(Asia/Shanghai)：{date}'
 )
 
@@ -606,7 +609,7 @@ def make_run_tools_node(tools, write_tools, *, tool_timeout=None, retry_backoff=
                       'data': None,
                       'error': {'code': 'PARALLEL_WRITE_BLOCKED',
                                 'message': f'写操作 {name} 不能与其他工具调用并行提交，本次未执行；'
-                                           '请单独发出这一个调用（会先经用户确认）。',
+                                           '请立刻单独重新发出这一个调用（不要带其他工具），会先经用户确认。',
                                 'stage': 'policy', 'retryable': True, 'details': None}}
             messages.append(ToolMessage(
                 content=result['error']['message'], tool_call_id=call_id, name=name, status='error'))

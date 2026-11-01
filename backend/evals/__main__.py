@@ -27,6 +27,8 @@ def parse_args() -> argparse.Namespace:
                         help='只跑指定类别，可重复：--category query --category create')
     parser.add_argument('--id', action='append', default=None, help='只跑指定用例 ID，可重复')
     parser.add_argument('--concurrency', type=int, default=3, help='并发用例数（默认 3，避免打爆限流）')
+    parser.add_argument('--repeat', type=int, default=1,
+                        help='重复轮数。temperature=0 也不保证确定性，取 3 轮看方差更可信')
     parser.add_argument('--timeout', type=float, default=120.0, help='单条用例超时秒数')
     parser.add_argument('--out', default='evals/results/latest.md', help='Markdown 报告输出路径')
     parser.add_argument('--json-out', default=None, help='JSON 结果输出路径（用于跨版本比对）')
@@ -79,10 +81,14 @@ async def main() -> None:
               f'{len(result.proposed_tools)} 次调用  {result.latency_ms:.0f}ms')
         return result
 
-    results = await asyncio.gather(*(one(c) for c in cases))
-    summary = aggregate(list(results), cases)
+    results = []
+    for round_index in range(max(1, args.repeat)):
+        if args.repeat > 1:
+            print(f'--- 第 {round_index + 1}/{args.repeat} 轮 ---')
+        results.extend(await asyncio.gather(*(one(c) for c in cases)))
+    summary = aggregate(results, cases)
 
-    report = render(summary, list(results), cases, model_name=model_name, base_url=base_url)
+    report = render(summary, results, cases, model_name=model_name, base_url=base_url)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report, encoding='utf-8')
@@ -101,7 +107,8 @@ async def main() -> None:
     print(f'通过率        {summary["passed"]}/{summary["n_cases"]} = {summary["pass_rate"]}')
     print(f'工具选择准确率 {summary["tool_selection_accuracy"]}')
     print(f'参数准确率     {summary["arg_accuracy"]}（{summary["n_arg_cases"]} 条）')
-    print(f'审批触达率     {summary["approval_hit_rate"]}（{summary["n_approval_cases"]} 条）')
+    print(f'审批触达率     {summary["approval_hit_rate"]}'
+          f'（写工具被调用 {summary["n_approval_cases"]} 次 / 期望 {summary["n_approval_expected"]} 次）')
     print(f'越权写操作     {summary["policy_violations"]} 次')
     print(f'延迟 p50/p95   {summary["p50_latency_ms"]}/{summary["p95_latency_ms"]} ms')
     print(f'报告已写入     {out}')
