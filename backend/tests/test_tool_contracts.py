@@ -8,6 +8,7 @@ from app.data.db import Database
 from app.data.models import Bill, TrackingCard
 from app.errors import ToolError
 from app.schemas import CardList, CardView, QueryBillResult
+from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
@@ -27,17 +28,17 @@ async def seed_bills(db):
     async with db.sessions() as session:
         async with session.begin():
             session.add_all([
-                Bill(tx_no='a', tx_time='2026-09-01T10:00:00', merchant='张三', product='转账',
+                Bill(user_id=TEST_USER_ID, tx_no='a', tx_time='2026-09-01T10:00:00', merchant='张三', product='转账',
                      amount_cents=10000, direction='expense', transaction_type='转账',
                      payment_method='零钱', transaction_status='已转账', merchant_tx_no='ma', note='',
                      category='其他', category_source='unclassified', category_confidence=0,
                      source='test', import_batch_id='b', source_sheet='Sheet1', source_row=1),
-                Bill(tx_no='b', tx_time='2026-09-01T11:00:00', merchant='张三', product='转账',
+                Bill(user_id=TEST_USER_ID, tx_no='b', tx_time='2026-09-01T11:00:00', merchant='张三', product='转账',
                      amount_cents=2500, direction='income', transaction_type='转账',
                      payment_method='银行卡', transaction_status='对方已收钱', merchant_tx_no='mb', note='',
                      category='其他', category_source='unclassified', category_confidence=0,
                      source='test', import_batch_id='b', source_sheet='Sheet1', source_row=2),
-                Bill(tx_no='c', tx_time='2026-09-01T12:00:00', merchant='咖啡店', product='咖啡',
+                Bill(user_id=TEST_USER_ID, tx_no='c', tx_time='2026-09-01T12:00:00', merchant='咖啡店', product='咖啡',
                      amount_cents=3500, direction='expense', transaction_type='商户消费',
                      payment_method='零钱', transaction_status='支付成功', merchant_tx_no='mc', note='',
                      category='餐饮', category_source='rule', category_confidence=.95,
@@ -53,9 +54,10 @@ def test_tool_description_comes_from_docstring(ctx):
 
 def test_write_tool_governance_markers():
     assert WRITE_TOOLS == frozenset(
-        {'create_tracking_card', 'complete_tracking_card', 'create_cards_from_query',
+        {'add_bill', 'create_tracking_card', 'complete_tracking_card', 'create_cards_from_query',
          'create_event', 'complete_event', 'update_event'})
     assert TOOL_PERMISSIONS == {
+        'add_bill': ('billing:bill:create',),
         'create_tracking_card': ('billing:card:create',),
         'complete_tracking_card': ('billing:card:complete',),
         'create_cards_from_query': ('billing:card:create',),
@@ -255,7 +257,7 @@ async def seed_many_bills(db, n=10):
     async with db.sessions() as session:
         async with session.begin():
             session.add_all([
-                Bill(tx_no=f'm{i}', tx_time=f'2026-08-{i % 28 + 1:02d}T10:00:00',
+                Bill(user_id=TEST_USER_ID, tx_no=f'm{i}', tx_time=f'2026-08-{i % 28 + 1:02d}T10:00:00',
                      merchant=f'收款人{i:03d}', product='转账', amount_cents=10000 + i * 100,
                      direction='expense', transaction_type='转账', payment_method='零钱',
                      transaction_status='已转账', merchant_tx_no=f'mm{i}', note='',

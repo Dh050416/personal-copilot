@@ -15,11 +15,12 @@ from app.api.chat import router as chat_router
 from app.api.events import router as events_router
 from app.api.memory import router as memory_router
 from app.api.reports import router as reports_router
+from app.auth import AuthMiddleware, load_or_create_secret
 from app.config import Settings
 from app.data.db import Database
-from app.data.models import AgentMemory, User
-from app.auth import AuthMiddleware, load_or_create_secret
-from app.observability import flush as langfuse_flush, init_langfuse
+from app.data.models import AgentMemory
+from app.observability import flush as langfuse_flush
+from app.observability import init_langfuse
 
 
 @asynccontextmanager

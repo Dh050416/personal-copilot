@@ -16,7 +16,6 @@ import os
 import secrets
 from pathlib import Path
 
-from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 

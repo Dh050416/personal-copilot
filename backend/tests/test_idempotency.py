@@ -18,6 +18,7 @@ from app.data.db import Database
 from app.data.models import TrackingCard
 from app.schemas import CreateTrackingCardArgs
 from app.services.card_service import create_card
+from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
@@ -90,17 +91,17 @@ async def seed_bills(db):
     async with db.sessions() as session:
         async with session.begin():
             session.add_all([
-                Bill(tx_no='a', tx_time='2026-09-01T10:00:00', merchant='张三', product='转账',
+                Bill(user_id=TEST_USER_ID, tx_no='a', tx_time='2026-09-01T10:00:00', merchant='张三', product='转账',
                      amount_cents=10000, direction='expense', transaction_type='转账',
                      payment_method='零钱', transaction_status='已转账', merchant_tx_no='ma', note='',
                      category='其他', category_source='unclassified', category_confidence=0,
                      source='test', import_batch_id='b', source_sheet='Sheet1', source_row=1),
-                Bill(tx_no='b', tx_time='2026-09-01T11:00:00', merchant='李四', product='转账',
+                Bill(user_id=TEST_USER_ID, tx_no='b', tx_time='2026-09-01T11:00:00', merchant='李四', product='转账',
                      amount_cents=2500, direction='income', transaction_type='转账',
                      payment_method='银行卡', transaction_status='对方已收钱', merchant_tx_no='mb', note='',
                      category='其他', category_source='unclassified', category_confidence=0,
                      source='test', import_batch_id='b', source_sheet='Sheet1', source_row=2),
-                Bill(tx_no='c', tx_time='2026-09-01T12:00:00', merchant='咖啡店', product='咖啡',
+                Bill(user_id=TEST_USER_ID, tx_no='c', tx_time='2026-09-01T12:00:00', merchant='咖啡店', product='咖啡',
                      amount_cents=3500, direction='expense', transaction_type='商户消费',
                      payment_method='零钱', transaction_status='支付成功', merchant_tx_no='mc', note='',
                      category='餐饮', category_source='rule', category_confidence=.95,
@@ -114,8 +115,8 @@ async def seed_bills(db):
 async def test_create_card_same_key_replays_first_result(ctx):
     """同键重复调用：只建一张卡，第二次返回首次的同一张卡（重放）。"""
     args = CreateTrackingCardArgs(category='餐饮', purpose='报销')
-    v1 = await create_card(ctx['db'], args, idempotency_key='apr-call-1')
-    v2 = await create_card(ctx['db'], args, idempotency_key='apr-call-1')
+    v1 = await create_card(ctx['db'], TEST_USER_ID, args, idempotency_key='apr-call-1')
+    v2 = await create_card(ctx['db'], TEST_USER_ID, args, idempotency_key='apr-call-1')
     assert v1['id'] == v2['id']
     assert await card_count(ctx['db']) == 1
 
@@ -124,8 +125,8 @@ async def test_create_card_same_key_replays_first_result(ctx):
 async def test_create_card_different_keys_create_separate_cards(ctx):
     """不同键（不同操作意图）→ 正常各自建卡，互不干扰。"""
     args = CreateTrackingCardArgs(category='餐饮', purpose='报销')
-    v1 = await create_card(ctx['db'], args, idempotency_key='apr-call-1')
-    v2 = await create_card(ctx['db'], args, idempotency_key='apr-call-2')
+    v1 = await create_card(ctx['db'], TEST_USER_ID, args, idempotency_key='apr-call-1')
+    v2 = await create_card(ctx['db'], TEST_USER_ID, args, idempotency_key='apr-call-2')
     assert v1['id'] != v2['id']
     assert await card_count(ctx['db']) == 2
 
@@ -134,8 +135,8 @@ async def test_create_card_different_keys_create_separate_cards(ctx):
 async def test_create_card_without_key_uses_random_uuid(ctx):
     """无键路径（历史兼容）：每次随机 uuid，正常新建。"""
     args = CreateTrackingCardArgs(category='餐饮', purpose='报销')
-    v1 = await create_card(ctx['db'], args)
-    v2 = await create_card(ctx['db'], args)
+    v1 = await create_card(ctx['db'], TEST_USER_ID, args)
+    v2 = await create_card(ctx['db'], TEST_USER_ID, args)
     assert v1['id'] != v2['id']
     assert await card_count(ctx['db']) == 2
 

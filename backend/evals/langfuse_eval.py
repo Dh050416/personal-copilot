@@ -47,7 +47,6 @@ Langfuse v4 服务端 + Python SDK 3.x 与网上大多数教程(v2)不兼容，�
 这些差异是实际跑出来的，不是从文档抄的。
 """
 import argparse
-import asyncio
 import json
 import os
 import re
@@ -66,7 +65,8 @@ from langfuse import Langfuse  # noqa: E402
 from langfuse.experiment import Evaluation, LocalExperimentItem  # noqa: E402
 
 from app.config import Settings  # noqa: E402
-from app.observability import client, flush as lf_flush, init_langfuse  # noqa: E402
+from app.observability import client, init_langfuse  # noqa: E402
+from app.observability import flush as lf_flush
 from evals.dataset import CASES, Case, find  # noqa: E402
 from evals.harness import run_case  # noqa: E402
 from evals.metrics import score  # noqa: E402

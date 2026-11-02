@@ -13,6 +13,7 @@ from app.agent.tools import WRITE_TOOLS, build_tools
 from app.data.db import Database
 from app.data.models import Bill
 from app.main import app
+from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
@@ -107,12 +108,12 @@ async def seed_bills(db):
     async with db.sessions() as session:
         async with session.begin():
             session.add_all([
-                Bill(tx_no='a', tx_time='2026-09-01T10:00:00', merchant='张三', product='转账',
+                Bill(user_id=TEST_USER_ID, tx_no='a', tx_time='2026-09-01T10:00:00', merchant='张三', product='转账',
                      amount_cents=10000, direction='expense', transaction_type='转账',
                      payment_method='零钱', transaction_status='已转账', merchant_tx_no='ma', note='',
                      category='其他', category_source='unclassified', category_confidence=0,
                      source='test', import_batch_id='b', source_sheet='Sheet1', source_row=1),
-                Bill(tx_no='c', tx_time='2026-09-01T12:00:00', merchant='咖啡店', product='咖啡',
+                Bill(user_id=TEST_USER_ID, tx_no='c', tx_time='2026-09-01T12:00:00', merchant='咖啡店', product='咖啡',
                      amount_cents=3500, direction='expense', transaction_type='商户消费',
                      payment_method='零钱', transaction_status='支付成功', merchant_tx_no='mc', note='',
                      category='餐饮', category_source='rule', category_confidence=.95,
@@ -120,11 +121,11 @@ async def seed_bills(db):
             ])
 
 
-def test_readonly_chat_emits_protocol_events(ctx):
+def test_readonly_chat_emits_protocol_events(ctx, auth_headers):
     install_graph(ctx['tools'],
                   tool_call_message('query_bill', {'category': '餐饮'}),
                   AIMessage(content='查询完成。'))
-    with TestClient(app).stream('POST', '/api/chat', json={'message': '查餐饮'}) as resp:
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat', json={'message': '查餐饮'}) as resp:
         assert resp.status_code == 200
         events = parse_events(resp.iter_lines())
     types = [e['type'] for e in events]
@@ -141,12 +142,12 @@ def test_readonly_chat_emits_protocol_events(ctx):
     assert events[-1]['payload']['text'] == '查询完成。'
 
 
-def test_write_chat_emits_approval_then_resume_approve(ctx):
+def test_write_chat_emits_approval_then_resume_approve(ctx, auth_headers):
     install_graph(ctx['tools'],
                   tool_call_message('create_tracking_card',
                                     {'category': '餐饮', 'purpose': '报销'}),
                   AIMessage(content='卡片已创建。'))
-    with TestClient(app).stream('POST', '/api/chat', json={'message': '建卡'}) as resp:
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat', json={'message': '建卡'}) as resp:
         first = parse_events(resp.iter_lines())
     types = [e['type'] for e in first]
     assert 'approval_created' in types and 'final' not in types
@@ -154,7 +155,7 @@ def test_write_chat_emits_approval_then_resume_approve(ctx):
     assert approval['payload']['tool'] == 'create_tracking_card'
     assert approval['payload']['args'] == {'category': '餐饮', 'purpose': '报销'}
     run_id, approval_id = approval['run_id'], approval['payload']['approval_id']
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', f'/api/runs/{run_id}/resume',
             json={'approval_id': approval_id, 'decision': 'approve'}) as resp:
         second = parse_events(resp.iter_lines())
@@ -164,15 +165,15 @@ def test_write_chat_emits_approval_then_resume_approve(ctx):
     assert tool_event['payload']['result']['data']['purpose'] == '报销'
 
 
-def test_write_chat_reject_resumes_with_user_rejected(ctx):
+def test_write_chat_reject_resumes_with_user_rejected(ctx, auth_headers):
     install_graph(ctx['tools'],
                   tool_call_message('create_tracking_card', {'category': '订阅', 'purpose': '待退订'}),
                   AIMessage(content='好的，已取消。'))
-    with TestClient(app).stream('POST', '/api/chat', json={'message': '建卡'}) as resp:
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat', json={'message': '建卡'}) as resp:
         first = parse_events(resp.iter_lines())
     approval = next(e for e in first if e['type'] == 'approval_created')
     run_id, approval_id = approval['run_id'], approval['payload']['approval_id']
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', f'/api/runs/{run_id}/resume',
             json={'approval_id': approval_id, 'decision': 'reject'}) as resp:
         second = parse_events(resp.iter_lines())
@@ -182,20 +183,20 @@ def test_write_chat_reject_resumes_with_user_rejected(ctx):
     assert second[-1]['type'] == 'final'
 
 
-def test_resume_unknown_run_and_wrong_approval(ctx):
+def test_resume_unknown_run_and_wrong_approval(ctx, auth_headers):
     install_graph(ctx['tools'], AIMessage(content='ok'))
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', '/api/runs/no-such-run/resume',
             json={'approval_id': 'x', 'decision': 'approve'}) as resp:
         assert resp.status_code == 404
     install_graph(ctx['tools'], AIMessage(content='ok'))
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', '/api/runs/another/resume',
             json={'approval_id': 'x', 'decision': 'approve'}) as resp:
         assert resp.status_code in (404, 409)
 
 
-def test_same_session_second_turn_carries_context(ctx):
+def test_same_session_second_turn_carries_context(ctx, auth_headers):
     """同一 session_id 的两轮消息共享 thread 历史：第二轮模型必须能看到第一轮内容。"""
     recorder = RecordingChatModel([
         tool_call_message('query_bill', {'category': '餐饮'}),
@@ -204,11 +205,11 @@ def test_same_session_second_turn_carries_context(ctx):
     ])
     app.state.graph = make_graph(recorder, ctx['tools'], WRITE_TOOLS, MemorySaver())
     app.state.checkpointer = MemorySaver()
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '查9月1日账单', 'session_id': 'sess-x'}) as resp:
         first = parse_events(resp.iter_lines())
     assert first[-1]['type'] == 'final' and first[-1]['payload']['text'] == '第一轮完成。'
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '只要餐饮的', 'session_id': 'sess-x'}) as resp:
         second = parse_events(resp.iter_lines())
     assert second[-1]['type'] == 'final' and second[-1]['payload']['text'] == '第二轮基于上下文回答。'
@@ -220,7 +221,7 @@ def test_same_session_second_turn_carries_context(ctx):
     assert sum(1 for c in second_call if '个人账单管家' in c) == 1  # System 仅首轮注入一次
 
 
-def test_new_session_id_starts_fresh_history(ctx):
+def test_new_session_id_starts_fresh_history(ctx, auth_headers):
     """不同 session_id = 独立会话：第二轮模型看不到第一轮内容。"""
     recorder = RecordingChatModel([
         AIMessage(content='第一轮回答。'),
@@ -228,22 +229,22 @@ def test_new_session_id_starts_fresh_history(ctx):
     ])
     app.state.graph = make_graph(recorder, ctx['tools'], WRITE_TOOLS, MemorySaver())
     app.state.checkpointer = MemorySaver()
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '查9月1日账单', 'session_id': 'sess-a'}) as resp:
         parse_events(resp.iter_lines())
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '只要餐饮的', 'session_id': 'sess-b'}) as resp:
         parse_events(resp.iter_lines())
     assert len(recorder.calls) == 2
     assert not any('查9月1日账单' in c for c in recorder.calls[1])
 
 
-def test_model_timeout_self_heals_and_completes(ctx):
+def test_model_timeout_self_heals_and_completes(ctx, auth_headers):
     """模型调用第一次超时 → 节点提示自愈重试成功 → run 正常完成（无 RUN_FAILED）。"""
     llm = FlakyChatModel([AIMessage(content='重试成功。')], fail_times=1)
     app.state.graph = make_graph(llm, ctx['tools'], WRITE_TOOLS, MemorySaver())
     app.state.checkpointer = MemorySaver()
-    with TestClient(app).stream('POST', '/api/chat', json={'message': '查账单'}) as resp:
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat', json={'message': '查账单'}) as resp:
         events = parse_events(resp.iter_lines())
     types = [e['type'] for e in events]
     assert 'error' not in types
@@ -251,12 +252,12 @@ def test_model_timeout_self_heals_and_completes(ctx):
     assert events[-1]['payload']['text'] == '重试成功。'
 
 
-def test_model_timeout_after_retry_returns_readable_final(ctx):
+def test_model_timeout_after_retry_returns_readable_final(ctx, auth_headers):
     """模型连续超时 → 返回可读 final，而不是把 run 打成 RUN_FAILED。"""
     llm = FlakyChatModel([], fail_times=99)
     app.state.graph = make_graph(llm, ctx['tools'], WRITE_TOOLS, MemorySaver())
     app.state.checkpointer = MemorySaver()
-    with TestClient(app).stream('POST', '/api/chat', json={'message': '查账单'}) as resp:
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat', json={'message': '查账单'}) as resp:
         events = parse_events(resp.iter_lines())
     types = [e['type'] for e in events]
     assert 'error' not in types
@@ -264,29 +265,29 @@ def test_model_timeout_after_retry_returns_readable_final(ctx):
     assert '模型响应暂时不可用' in events[-1]['payload']['text']
 
 
-def test_complete_card_chat_emits_approval_then_resume_approve(ctx):
+def test_complete_card_chat_emits_approval_then_resume_approve(ctx, auth_headers):
     """「把卡片移到已完成」走 HITL：第一轮建卡批准，第二轮 complete_tracking_card 批准后 status=done。"""
     install_graph(ctx['tools'],
                   tool_call_message('create_tracking_card', {'category': '餐饮', 'purpose': '报销'}),
                   AIMessage(content='卡片已创建。'),
                   tool_call_message('complete_tracking_card', {'card_id': 1}, call_id='call-2'),
                   AIMessage(content='卡片已完成。'))
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '建卡', 'session_id': 'sess-c'}) as resp:
         first = parse_events(resp.iter_lines())
     approval = next(e for e in first if e['type'] == 'approval_created')
     assert approval['payload']['tool'] == 'create_tracking_card'
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', f"/api/runs/{approval['run_id']}/resume",
             json={'approval_id': approval['payload']['approval_id'], 'decision': 'approve'}) as resp:
         parse_events(resp.iter_lines())
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '把这张卡移到已完成', 'session_id': 'sess-c'}) as resp:
         second = parse_events(resp.iter_lines())
     approval2 = next(e for e in second if e['type'] == 'approval_created')
     assert approval2['payload']['tool'] == 'complete_tracking_card'
     assert approval2['payload']['args'] == {'card_id': 1}
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', f"/api/runs/{approval2['run_id']}/resume",
             json={'approval_id': approval2['payload']['approval_id'], 'decision': 'approve'}) as resp:
         third = parse_events(resp.iter_lines())

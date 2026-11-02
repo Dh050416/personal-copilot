@@ -169,42 +169,42 @@ async def test_no_tool_timeout_keeps_original_behavior(ctx):
 
 # ---------- run 整体超时 ----------
 
-def test_run_timeout_stops_with_friendly_final(ctx):
+def test_run_timeout_stops_with_friendly_final(ctx, auth_headers):
     """run 超过 run_timeout_seconds → 友好 final（时间上限），无 error 事件，thread 释放。"""
     app.state.graph = make_graph(LoopingFakeChatModel(messages=iter([])), ctx['tools'],
                                  WRITE_TOOLS, MemorySaver())
     app.state.checkpointer = MemorySaver()
     app.state.thread_runtime = {}
     app.state.settings = fake_settings(run_timeout_seconds=0.3, max_steps=1000)
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '查餐饮', 'session_id': 'rt-t'}) as resp:
         events = parse_events(resp.iter_lines())
     assert events[-1]['type'] == 'final'
     assert '时间上限' in events[-1]['payload']['text']
     assert 'error' not in [e['type'] for e in events]
-    assert app.state.thread_runtime['rt-t']['active'] is False
+    assert app.state.thread_runtime['u1:rt-t']['active'] is False
 
 
 # ---------- 工具调用次数护栏 ----------
 
-def test_max_tool_calls_stops_run(ctx):
+def test_max_tool_calls_stops_run(ctx, auth_headers):
     """工具调用达到 max_tool_calls_per_run → 友好 final，不再继续执行。"""
     app.state.graph = make_graph(LoopingFakeChatModel(messages=iter([])), ctx['tools'],
                                  WRITE_TOOLS, MemorySaver())
     app.state.checkpointer = MemorySaver()
     app.state.thread_runtime = {}
     app.state.settings = fake_settings(max_tool_calls_per_run=3, max_steps=1000)
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '查餐饮', 'session_id': 'mt-t'}) as resp:
         events = parse_events(resp.iter_lines())
     finals = [e for e in events if e['type'] == 'final']
     assert finals and '工具调用次数' in finals[-1]['payload']['text']
     tool_events = [e for e in events if e['type'] == 'tool_result']
     assert len(tool_events) == 3
-    assert app.state.thread_runtime['mt-t']['active'] is False
+    assert app.state.thread_runtime['u1:mt-t']['active'] is False
 
 
-def test_new_turn_resets_tool_call_budget(ctx):
+def test_new_turn_resets_tool_call_budget(ctx, auth_headers):
     """回归：护栏是「每次 run」而不是「每个会话终身」。
 
     tool_calls_done 持久化在 checkpoint 里，若新一轮用户提问不归零，会话触顶一次后
@@ -216,13 +216,13 @@ def test_new_turn_resets_tool_call_budget(ctx):
     app.state.thread_runtime = {}
     app.state.settings = fake_settings(max_tool_calls_per_run=3, max_steps=1000)
     # 第一轮：把预算跑满
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '查餐饮', 'session_id': 'mt-reset'}) as resp:
         first = parse_events(resp.iter_lines())
     assert len([e for e in first if e['type'] == 'tool_result']) == 3
     assert '工具调用次数' in [e for e in first if e['type'] == 'final'][-1]['payload']['text']
     # 第二轮：同一 session 新提问，必须重新获得完整预算而不是立刻被拦
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '再查一次', 'session_id': 'mt-reset'}) as resp:
         second = parse_events(resp.iter_lines())
     assert len([e for e in second if e['type'] == 'tool_result']) == 3, (
@@ -232,7 +232,7 @@ def test_new_turn_resets_tool_call_budget(ctx):
 
 # ---------- 审批 TTL ----------
 
-def test_approval_expired_rejected(ctx, monkeypatch):
+def test_approval_expired_rejected(ctx, monkeypatch, auth_headers):
     """审批创建超过 approval_ttl_seconds → resume 返回 410，拒绝恢复。"""
     import app.agent.graph as graph_mod
 
@@ -246,17 +246,17 @@ def test_approval_expired_rejected(ctx, monkeypatch):
     # 把 approve 节点的 now_iso 替换成过去时间，制造"创建于很久之前"的审批
     monkeypatch.setattr(graph_mod, 'now_iso', lambda: '2020-01-01T00:00:00+00:00')
     app.state.settings = fake_settings(approval_ttl_seconds=3600)
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '建卡', 'session_id': 'ttl-t'}) as resp:
         first = parse_events(resp.iter_lines())
     approval = next(e for e in first if e['type'] == 'approval_created')
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', f"/api/runs/{approval['run_id']}/resume",
             json={'approval_id': approval['payload']['approval_id'], 'decision': 'approve'}) as resp:
         assert resp.status_code == 410
 
 
-def test_approval_within_ttl_resumes_ok(ctx):
+def test_approval_within_ttl_resumes_ok(ctx, auth_headers):
     """审批未过期 → resume 正常执行（正路径保护）。"""
     llm = FakeChatModel(messages=iter([
         tool_call_message('create_tracking_card', {'category': '餐饮', 'purpose': '报销'}),
@@ -266,11 +266,11 @@ def test_approval_within_ttl_resumes_ok(ctx):
     app.state.checkpointer = MemorySaver()
     app.state.thread_runtime = {}
     app.state.settings = fake_settings(approval_ttl_seconds=3600)
-    with TestClient(app).stream('POST', '/api/chat',
+    with TestClient(app, headers=auth_headers).stream('POST', '/api/chat',
                                 json={'message': '建卡', 'session_id': 'ttl-ok'}) as resp:
         first = parse_events(resp.iter_lines())
     approval = next(e for e in first if e['type'] == 'approval_created')
-    with TestClient(app).stream(
+    with TestClient(app, headers=auth_headers).stream(
             'POST', f"/api/runs/{approval['run_id']}/resume",
             json={'approval_id': approval['payload']['approval_id'], 'decision': 'approve'}) as resp:
         second = parse_events(resp.iter_lines())

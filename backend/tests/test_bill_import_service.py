@@ -9,6 +9,7 @@ from app.data.models import Bill
 from app.services.bill_service import classify_existing, import_rows
 from app.services.classification import BillClassifier, ClassificationItem
 from app.services.importer import parse_rows
+from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def import_fixture():
 async def test_reimport_fills_raw_fields_preserves_human_category_and_identity(db):
     classifier = BillClassifier(Settings(_env_file=None))
     rows = import_fixture()
-    first = await import_rows(db, rows, 'test.xlsx', classifier)
+    first = await import_rows(db, TEST_USER_ID, rows, 'test.xlsx', classifier)
     assert first['inserted'] == 1
     async with db.sessions() as session:
         b = await session.scalar(select(Bill))
@@ -41,7 +42,7 @@ async def test_reimport_fills_raw_fields_preserves_human_category_and_identity(d
         b.category = '住房'
         b.category_source = 'user'
         await session.commit()
-    second = await import_rows(db, rows, 'test.xlsx', classifier)
+    second = await import_rows(db, TEST_USER_ID, rows, 'test.xlsx', classifier)
     assert second['inserted'] == 0 and second['enriched'] == 1
     async with db.sessions() as session:
         assert await session.scalar(select(func.count(Bill.id))) == 1
@@ -53,18 +54,18 @@ async def test_reimport_fills_raw_fields_preserves_human_category_and_identity(d
 async def test_duplicate_conflicts_do_not_overwrite(db):
     classifier = BillClassifier(Settings(_env_file=None))
     rows = import_fixture()
-    report = await import_rows(db, rows * 2, 'test.xlsx', classifier)
+    report = await import_rows(db, TEST_USER_ID, rows * 2, 'test.xlsx', classifier)
     assert report['inserted'] == 1 and report['skipped'] == 1
     rows[0]['amount_cents'] = 999
     with pytest.raises(ValueError):
-        await import_rows(db, rows, 'test.xlsx', classifier)
+        await import_rows(db, TEST_USER_ID, rows, 'test.xlsx', classifier)
     async with db.sessions() as session:
         assert (await session.scalar(select(Bill))).amount_cents == 1250
 
 
 async def test_concurrent_human_confirmation_wins(db, monkeypatch):
     classifier = BillClassifier(Settings(_env_file=None))
-    await import_rows(db, import_fixture(), 'test.xlsx', classifier)
+    await import_rows(db, TEST_USER_ID, import_fixture(), 'test.xlsx', classifier)
     async with db.sessions() as session:
         b = await session.scalar(select(Bill))
         b.category_source = 'unclassified'
@@ -81,7 +82,7 @@ async def test_concurrent_human_confirmation_wins(db, monkeypatch):
             await session.commit()
         return [ClassificationItem(key=0, category='购物', confidence=1)]
     monkeypatch.setattr(classifier, 'predict_batch', AsyncMock(side_effect=predict))
-    report = await classify_existing(db, classifier, 200)
+    report = await classify_existing(db, TEST_USER_ID, classifier, 200)
     assert report['classified'] == 0
     async with db.sessions() as session:
         assert (await session.get(Bill, bill_id)).category == '教育'

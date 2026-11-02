@@ -134,19 +134,19 @@ def parse_events(lines):
     return events
 
 
-def test_busy_thread_queues_message(ctx):
+def test_busy_thread_queues_message(ctx, auth_headers):
     """thread 忙（执行流在跑）时新消息返回 {queued:true} 并入队，不并发执行。"""
     llm = FakeChatModel(messages=iter([AIMessage(content='ok')]))
     app.state.graph = make_graph(llm, ctx['tools'], WRITE_TOOLS, MemorySaver())
     app.state.checkpointer = MemorySaver()
-    # 模拟已有执行流在跑
-    app.state.thread_runtime = {'busy-t': {'active': True, 'pending': deque(),
-                                           'waiting_approval': False}}
-    resp = TestClient(app).post('/api/chat', json={'message': '追加', 'session_id': 'busy-t'})
+    # 模拟已有执行流在跑（thread_id 带 u{user_id}: 前缀）
+    app.state.thread_runtime = {'u1:busy-t': {'active': True, 'pending': deque(),
+                                              'waiting_approval': False}}
+    resp = TestClient(app).post('/api/chat', json={'message': '追加', 'session_id': 'busy-t'}, headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data['queued'] is True
-    assert list(app.state.thread_runtime['busy-t']['pending']) == ['追加']
+    assert list(app.state.thread_runtime['u1:busy-t']['pending']) == ['追加']
 
 
 class LoopingFakeChatModel(FakeChatModel):
@@ -164,7 +164,7 @@ class LoopingFakeChatModel(FakeChatModel):
         ))
 
 
-def test_runner_segment_guard_stops_infinite_loop(ctx):
+def test_runner_segment_guard_stops_infinite_loop(ctx, auth_headers):
     """runner 段数护栏：LangGraph recursion_limit 不跨 resume 累积（每轮被 check_input
     截断成段），循环 runner 必须自己统计段数，无限循环时强制停止并返回友好 final
     （防止 SSE 永久挂起）。"""
@@ -174,15 +174,15 @@ def test_runner_segment_guard_stops_infinite_loop(ctx):
     app.state.thread_runtime = {}
     app.state.settings = type('S', (), {'max_steps': 4})()
     with TestClient(app).stream('POST', '/api/chat',
-                                json={'message': '查餐饮', 'session_id': 'loop-t'}) as resp:
+                                json={'message': '查餐饮', 'session_id': 'loop-t'}, headers=auth_headers) as resp:
         events = parse_events(resp.iter_lines())
     assert events[-1]['type'] == 'final'
     assert '超过了上限' in events[-1]['payload']['text']
     # run 结束后 thread 释放，可再次发起新 run（不残留 busy 状态）
-    assert app.state.thread_runtime['loop-t']['active'] is False
+    assert app.state.thread_runtime['u1:loop-t']['active'] is False
 
 
-def test_leftover_queue_merged_into_next_run(ctx):
+def test_leftover_queue_merged_into_next_run(ctx, auth_headers):
     """上一轮 END 竞态残留的排队输入：新一轮 /chat 时合并进初始输入，不丢消息。"""
     recorder = RecordingChatModel([
         AIMessage(content='第一轮。'),
@@ -192,14 +192,14 @@ def test_leftover_queue_merged_into_next_run(ctx):
     app.state.checkpointer = MemorySaver()
     app.state.thread_runtime = {}
     with TestClient(app).stream('POST', '/api/chat',
-                                json={'message': '任务一', 'session_id': 'mix-t'}) as resp:
+                                json={'message': '任务一', 'session_id': 'mix-t'}, headers=auth_headers) as resp:
         first = parse_events(resp.iter_lines())
     assert first[-1]['type'] == 'final' and first[-1]['payload']['text'] == '第一轮。'
     # 模拟 END 竞态：队列残留一条（晚于最后一个输入检查点到达）
-    app.state.thread_runtime['mix-t'] = {'active': False, 'pending': deque(['残留追加']),
-                                         'waiting_approval': False}
+    app.state.thread_runtime['u1:mix-t'] = {'active': False, 'pending': deque(['残留追加']),
+                                            'waiting_approval': False}
     with TestClient(app).stream('POST', '/api/chat',
-                                json={'message': '任务二', 'session_id': 'mix-t'}) as resp:
+                                json={'message': '任务二', 'session_id': 'mix-t'}, headers=auth_headers) as resp:
         second = parse_events(resp.iter_lines())
     assert second[-1]['type'] == 'final' and second[-1]['payload']['text'] == '第二轮。'
     # 第二轮模型同时看到新消息与残留追加

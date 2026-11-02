@@ -110,7 +110,7 @@ def test_build_system_message_no_memory_when_none():
 async def test_intent_injects_memory_into_system(ctx):
     recorder = RecordingChatModel([AIMessage(content='好的。')])
 
-    async def loader():
+    async def loader(user_id=None):
         return '报销默认分类=其他；章鱼大王=常去餐饮店'
 
     graph = make_graph(recorder, ctx['tools'], WRITE_TOOLS, MemorySaver(), memory_loader=loader)

@@ -22,7 +22,7 @@ from langgraph.types import Command
 from sqlalchemy import select
 
 from app.agent.graph import initial_input, make_graph
-from app.agent.tools import OUTPUT_SCHEMAS, WRITE_TOOLS, build_tools
+from app.agent.tools import _USER_ID, OUTPUT_SCHEMAS, WRITE_TOOLS, build_tools
 from app.data.db import Database
 from app.data.models import AgentMemory, Bill, ScheduleEvent, TrackingCard
 from evals.dataset import SEEDS, Case
@@ -63,27 +63,33 @@ class CaseRun:
 
 
 async def _seed(db: Database, seed_names: tuple[str, ...]) -> None:
+    user_id = _USER_ID.get()
     async with db.sessions() as session:
         async with session.begin():
             for name in seed_names:
                 for idx, row in enumerate(SEEDS[name], start=1):
                     if name == 'bills':
                         session.add(Bill(
+                            user_id=user_id,
                             merchant_tx_no=f"m{row['tx_no']}", note='', source='eval',
                             import_batch_id='eval', source_sheet='Sheet1', source_row=idx, **row))
                     elif name == 'cards':
-                        session.add(TrackingCard(invocation_id=uuid4().hex, note='', **row))
+                        session.add(TrackingCard(user_id=user_id,
+                                                 invocation_id=uuid4().hex, note='', **row))
                     elif name == 'events':
-                        session.add(ScheduleEvent(invocation_id=uuid4().hex, **row))
+                        session.add(ScheduleEvent(user_id=user_id,
+                                                  invocation_id=uuid4().hex, **row))
                     else:  # pragma: no cover - 数据集里不会出现未知种子
                         raise KeyError(name)
 
 
 def _memory_loader(db: Database):
-    async def load() -> str | None:
+    async def load(user_id: int | None = None) -> str | None:
         async with db.sessions() as session:
-            rows = list(await session.scalars(
-                select(AgentMemory).order_by(AgentMemory.updated_at.desc())))
+            stmt = select(AgentMemory).order_by(AgentMemory.updated_at.desc())
+            if user_id is not None:
+                stmt = stmt.where(AgentMemory.user_id == user_id)
+            rows = list(await session.scalars(stmt))
         if not rows:
             return None
         return '；'.join(f'{r.key}={r.value}' for r in rows)

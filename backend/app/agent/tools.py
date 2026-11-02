@@ -45,8 +45,8 @@ from app.schemas import (
     WebSearchItem,
     WebSearchResult,
 )
-from app.services.card_service import complete_card, create_card
 from app.services.bill_service import add_bill as service_add_bill
+from app.services.card_service import complete_card, create_card
 from app.services.schedule_service import complete_event as service_complete_event
 from app.services.schedule_service import create_event as service_create_event
 from app.services.schedule_service import update_event as service_update_event

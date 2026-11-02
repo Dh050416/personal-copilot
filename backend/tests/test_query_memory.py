@@ -9,6 +9,7 @@ from app.agent.graph import initial_input, make_graph
 from app.agent.tools import WRITE_TOOLS, build_tools
 from app.data.db import Database
 from app.data.models import Bill
+from tests.conftest import TEST_USER_ID
 
 
 class RecordingChatModel(GenericFakeChatModel):
@@ -65,17 +66,17 @@ async def seed_bills(db):
     async with db.sessions() as session:
         async with session.begin():
             session.add_all([
-                Bill(tx_no='a', tx_time='2026-09-01T10:00:00', merchant='曹旋 (83493)', product='群收款',
+                Bill(user_id=TEST_USER_ID, tx_no='a', tx_time='2026-09-01T10:00:00', merchant='曹旋 (83493)', product='群收款',
                      amount_cents=1400, direction='income', transaction_type='群收款',
                      payment_method='零钱', transaction_status='已收钱', merchant_tx_no='', note='',
                      category='其他', category_source='unclassified', category_confidence=0,
                      source='test', import_batch_id='b', source_sheet='Sheet1', source_row=1),
-                Bill(tx_no='b', tx_time='2026-09-01T19:00:00', merchant='赵记 心乐米线孟州路店', product='米线',
+                Bill(user_id=TEST_USER_ID, tx_no='b', tx_time='2026-09-01T19:00:00', merchant='赵记 心乐米线孟州路店', product='米线',
                      amount_cents=9100, direction='expense', transaction_type='商户消费',
                      payment_method='零钱', transaction_status='支付成功', merchant_tx_no='', note='',
                      category='其他', category_source='unclassified', category_confidence=0,
                      source='test', import_batch_id='b', source_sheet='Sheet1', source_row=2),
-                Bill(tx_no='c', tx_time='2026-09-05T12:00:00', merchant='星巴克', product='咖啡',
+                Bill(user_id=TEST_USER_ID, tx_no='c', tx_time='2026-09-05T12:00:00', merchant='星巴克', product='咖啡',
                      amount_cents=3200, direction='expense', transaction_type='商户消费',
                      payment_method='银行卡', transaction_status='支付成功', merchant_tx_no='', note='',
                      category='餐饮', category_source='rule', category_confidence=.9,
