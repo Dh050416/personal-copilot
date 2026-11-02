@@ -26,13 +26,14 @@ const PURPOSE_LABELS: Record<string, string> = {
   待处理: "待处理",
 }
 
-/** 卡片归属泳道：优先按用途（AA/报销），再按消费分类 */
+/** 卡片归属泳道：用户显式指定 > 用途（AA/报销）> 消费分类 */
 function laneFor(card: TrackingCard): string {
+  if (card.lane) return card.lane // 用户说放哪就是哪，最高优先级
   if (card.purpose === "AA") return "AA"
+  if (card.purpose === "报销") return "未报销" // 报销意图必须先于消费分类，否则永远进不了「未报销」
   if (card.category === "订阅") return "订阅"
   if (card.category === "餐饮") return "餐饮"
   if (card.category === "交通") return "交通"
-  if (card.purpose === "报销") return "未报销"
   return "其他"
 }
 

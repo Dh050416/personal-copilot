@@ -21,7 +21,7 @@ async def list_events(request: Request,
     status ∈ active|done|all（默认 active，即未完成）。按开始时间升序。"""
     if status not in ('active', 'done', 'all'):
         raise HTTPException(400, 'status 仅支持 active|done|all')
-    filters = []
+    filters = [ScheduleEvent.user_id == request.state.user_id]
     if start_date is not None:
         filters.append(ScheduleEvent.start_at >= start_date.isoformat())
     if end_date is not None:

@@ -14,16 +14,19 @@ from app.errors import ToolError
 from app.schemas import EventView
 
 
-async def create_event(db, args, idempotency_key: str | None = None) -> EventView:
+async def create_event(db, user_id, args, idempotency_key: str | None = None) -> EventView:
     """创建日程并返回对外视图。幂等：invocation_id=key 命中即重放首次结果。"""
     async with db.sessions() as session:
         async with session.begin():
             if idempotency_key is not None:
                 existing = await session.scalar(
-                    select(ScheduleEvent).where(ScheduleEvent.invocation_id == idempotency_key))
+                    select(ScheduleEvent).where(
+                        ScheduleEvent.user_id == user_id,
+                        ScheduleEvent.invocation_id == idempotency_key))
                 if existing is not None:
                     return event_view(existing)
             event = ScheduleEvent(
+                user_id=user_id,
                 title=args.title, start_at=args.start_at, end_at=args.end_at,
                 location=args.location, note=args.note,
                 invocation_id=idempotency_key or uuid4().hex,
@@ -33,19 +36,21 @@ async def create_event(db, args, idempotency_key: str | None = None) -> EventVie
                 await session.flush()
             except IntegrityError:
                 existing = await session.scalar(
-                    select(ScheduleEvent).where(ScheduleEvent.invocation_id == idempotency_key))
+                    select(ScheduleEvent).where(
+                        ScheduleEvent.user_id == user_id,
+                        ScheduleEvent.invocation_id == idempotency_key))
                 if existing is not None:
                     return event_view(existing)
                 raise
             return event_view(event)
 
 
-async def complete_event(db, event_id: int) -> EventView:
+async def complete_event(db, user_id, event_id: int) -> EventView:
     """将日程标记为已完成。幂等：已完成的日程重复操作直接返回当前视图。"""
     async with db.sessions() as session:
         async with session.begin():
             event = await session.get(ScheduleEvent, event_id)
-            if event is None:
+            if event is None or event.user_id != user_id:
                 raise ToolError('EVENT_NOT_FOUND', '日程不存在，请先查询真实日程 ID',
                                 stage='business', retryable=False)
             if event.status != 'done':
@@ -53,12 +58,12 @@ async def complete_event(db, event_id: int) -> EventView:
             return event_view(event)
 
 
-async def update_event(db, args) -> EventView:
+async def update_event(db, user_id, args) -> EventView:
     """修改日程（标题/起止时间/地点/备注），至少一个字段。事件不存在抛业务错误。"""
     async with db.sessions() as session:
         async with session.begin():
             event = await session.get(ScheduleEvent, args.event_id)
-            if event is None:
+            if event is None or event.user_id != user_id:
                 raise ToolError('EVENT_NOT_FOUND', '日程不存在，请先查询真实日程 ID',
                                 stage='business', retryable=False)
             if args.title is not None:

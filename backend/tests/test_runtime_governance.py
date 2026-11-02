@@ -204,6 +204,32 @@ def test_max_tool_calls_stops_run(ctx):
     assert app.state.thread_runtime['mt-t']['active'] is False
 
 
+def test_new_turn_resets_tool_call_budget(ctx):
+    """回归：护栏是「每次 run」而不是「每个会话终身」。
+
+    tool_calls_done 持久化在 checkpoint 里，若新一轮用户提问不归零，会话触顶一次后
+    每一轮都会在 agent 节点入口被直接拦下（连模型都不调用），整个会话永久失效。
+    """
+    app.state.graph = make_graph(LoopingFakeChatModel(messages=iter([])), ctx['tools'],
+                                 WRITE_TOOLS, MemorySaver())
+    app.state.checkpointer = MemorySaver()
+    app.state.thread_runtime = {}
+    app.state.settings = fake_settings(max_tool_calls_per_run=3, max_steps=1000)
+    # 第一轮：把预算跑满
+    with TestClient(app).stream('POST', '/api/chat',
+                                json={'message': '查餐饮', 'session_id': 'mt-reset'}) as resp:
+        first = parse_events(resp.iter_lines())
+    assert len([e for e in first if e['type'] == 'tool_result']) == 3
+    assert '工具调用次数' in [e for e in first if e['type'] == 'final'][-1]['payload']['text']
+    # 第二轮：同一 session 新提问，必须重新获得完整预算而不是立刻被拦
+    with TestClient(app).stream('POST', '/api/chat',
+                                json={'message': '再查一次', 'session_id': 'mt-reset'}) as resp:
+        second = parse_events(resp.iter_lines())
+    assert len([e for e in second if e['type'] == 'tool_result']) == 3, (
+        '新一轮应当重新计数；若为 0 说明会话被上一轮的上限永久锁死')
+    assert '工具调用次数' in [e for e in second if e['type'] == 'final'][-1]['payload']['text']
+
+
 # ---------- 审批 TTL ----------
 
 def test_approval_expired_rejected(ctx, monkeypatch):

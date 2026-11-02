@@ -2,12 +2,22 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from app.data.models import Bill
 from app.data.views import bill_view
-from app.schemas import ClassifyBillsRequest, ConfirmBillCategory
-from app.services.bill_service import classify_existing, import_rows
+from app.schemas import AddBillArgs, ClassifyBillsRequest, ConfirmBillCategory
+from app.services.bill_service import add_bill, classify_existing, import_rows
 from app.services.classification import BillClassifier
 from app.services.importer import parse_file
 
 router = APIRouter(prefix='/api/bills', tags=['bills'])
+
+
+@router.post('')
+async def create_bill(payload: AddBillArgs, request: Request):
+    """随手记：直接写入一笔账单（source='manual'），不走文件导入、不经 Agent/模型。
+
+    确定性录入动作：金额/方向/分类/对方/备注均由用户显式填写，无需语义理解，
+    因此直连库写入（与 confirm_category/complete_card 等端点同属「直写」模式）。
+    """
+    return await add_bill(request.app.state.db, request.state.user_id, payload)
 
 
 @router.post('/preview')
@@ -32,7 +42,7 @@ async def import_bills(request: Request, file: UploadFile = File(...)):
     if parsed['errors']:
         return {**parsed, 'status': 'needs_review', 'message': '导入包含错误，请修正后重新导入'}
     try:
-        return await import_rows(request.app.state.db, parsed['rows'], filename,
+        return await import_rows(request.app.state.db, request.state.user_id, parsed['rows'], filename,
                                  BillClassifier(request.app.state.settings))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -40,7 +50,8 @@ async def import_bills(request: Request, file: UploadFile = File(...)):
 
 @router.post('/classify')
 async def classify_bills(payload: ClassifyBillsRequest, request: Request):
-    return await classify_existing(request.app.state.db, BillClassifier(request.app.state.settings), payload.limit)
+    return await classify_existing(request.app.state.db, request.state.user_id,
+                                   BillClassifier(request.app.state.settings), payload.limit)
 
 
 @router.post('/{bill_id}/category')
@@ -48,7 +59,7 @@ async def confirm_category(bill_id: int, payload: ConfirmBillCategory, request: 
     async with request.app.state.db.sessions() as session:
         async with session.begin():
             bill = await session.get(Bill, bill_id)
-            if bill is None:
+            if bill is None or bill.user_id != request.state.user_id:
                 raise HTTPException(404, '账单不存在')
             bill.category = payload.category
             bill.category_source = 'user'

@@ -54,7 +54,8 @@ def test_dataset_is_consistent():
     for case in CASES:
         assert case.turns, f'{case.id} 缺少输入'
         assert case.category in {'query', 'create', 'schedule', 'board', 'search',
-                                 'memory', 'refuse', 'multi'}, f'{case.id} 类别不合法'
+                                 'memory', 'refuse', 'multi',
+                                 'numeric', 'injection', 'empty'}, f'{case.id} 类别不合法'
         for tool in (*case.expect.tools, *case.expect.any_of, *case.expect.forbid):
             assert tool in OUTPUT_SCHEMAS, f'{case.id} 引用了未注册的工具 {tool}'
         for seed in case.seeds:

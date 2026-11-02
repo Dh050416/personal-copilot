@@ -113,6 +113,8 @@ export interface TrackingCard {
   counterparty: string
   amount: string | null
   occurred_at: string
+  /** 用户明确指定的泳道（栏目）；null 表示按分类/用途推导 */
+  lane: string | null
 }
 
 export interface CardListData {

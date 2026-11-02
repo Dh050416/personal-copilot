@@ -2,12 +2,10 @@
 import { computed, onMounted } from "vue"
 import { useSessionStore } from "../stores/session"
 import type { CardListData, TrackingCard } from "../tools/types"
-import { useNotBuilt } from "../composables/useNotBuilt"
-import NotBuiltNotice from "../components/NotBuiltNotice.vue"
 import TaskBoard from "../components/TaskBoard.vue"
+import CreateCardDialog from "../components/CreateCardDialog.vue"
 
 const store = useSessionStore()
-const { notice, show } = useNotBuilt()
 
 const cardData = computed<CardListData | undefined>(() => {
   const slot = store.renderSlots["list_tracking_cards"]
@@ -28,8 +26,9 @@ function onCardDeleted(card: TrackingCard): void {
   store.markCardDeleted(card.id)
 }
 
-function createCard(): void {
-  show("新建跟踪卡", "请到「对话」工作台输入：创建一张…卡，确认后即生成。")
+function onCardCreated(): void {
+  // 新建卡片后刷新看板，让新卡出现在对应泳道
+  refresh()
 }
 
 onMounted(() => {
@@ -48,7 +47,7 @@ onMounted(() => {
         <button class="btn" :disabled="store.busy" @click="refresh">
           {{ store.busy ? "查询中…" : "刷新" }}
         </button>
-        <button class="btn btn-primary" @click="createCard">+ 新建跟踪卡</button>
+        <CreateCardDialog @created="onCardCreated" />
       </div>
     </div>
 
@@ -56,8 +55,6 @@ onMounted(() => {
     <section v-else class="card empty-card">
       <p class="muted">正在查询任务数据…</p>
     </section>
-
-    <NotBuiltNotice :text="notice" />
   </div>
 </template>
 

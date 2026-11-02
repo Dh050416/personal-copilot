@@ -1,0 +1,22 @@
+# 后端构建忽略
+backend/.venv
+backend/data
+backend/.env
+backend/**/__pycache__
+backend/**/*.pyc
+backend/.pytest_cache
+backend/evals/results
+backend/scripts/backups
+
+# 前端构建忽略
+frontend/node_modules
+frontend/dist
+frontend/.env
+
+# 通用
+.git
+.gitignore
+*.md
+DEPLOY.md
+.workbuddy
+.DS_Store

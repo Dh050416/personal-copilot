@@ -8,13 +8,17 @@ from sqlalchemy import select
 
 from app.agent.graph import ToolResultCache, make_graph
 from app.agent.tools import CACHEABLE_TOOLS, OUTPUT_SCHEMAS, WRITE_TOOLS, build_tools
+from app.api.auth import router as auth_router
 from app.api.bills import router as bills_router
 from app.api.cards import router as cards_router
 from app.api.chat import router as chat_router
 from app.api.events import router as events_router
+from app.api.memory import router as memory_router
+from app.api.reports import router as reports_router
 from app.config import Settings
 from app.data.db import Database
-from app.data.models import AgentMemory
+from app.data.models import AgentMemory, User
+from app.auth import AuthMiddleware, load_or_create_secret
 from app.observability import flush as langfuse_flush, init_langfuse
 
 
@@ -25,6 +29,8 @@ async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     db = Database(settings.data_dir / 'personal_copilot.db')
     await db.initialize()
+    # 用户令牌签名密钥：环境变量或 data/auth_secret（容器重启后令牌仍有效）
+    auth_secret = load_or_create_secret(settings.data_dir)
     checkpoint_cm = AsyncSqliteSaver.from_conn_string(str(settings.data_dir / 'checkpoints.db'))
     checkpointer = await checkpoint_cm.__aenter__()
     model = ChatOpenAI(
@@ -37,11 +43,13 @@ async def lifespan(app: FastAPI):
         max_retries=2,
     )
 
-    async def load_memory_text() -> str | None:
-        """长期记忆全量加载（agent_memory 表 → 注入文本）。规模小（10-30 条），全量优于检索。"""
+    async def load_memory_text(user_id: int) -> str | None:
+        """长期记忆全量加载（agent_memory 表 → 注入文本），按 user_id 隔离。
+        规模小（10-30 条），全量优于检索。"""
         async with db.sessions() as session:
             rows = list(await session.scalars(
-                select(AgentMemory).order_by(AgentMemory.updated_at.desc())))
+                select(AgentMemory).where(AgentMemory.user_id == user_id)
+                .order_by(AgentMemory.updated_at.desc())))
         if not rows:
             return None
         return '；'.join(f'{r.key}={r.value}' for r in rows)
@@ -57,9 +65,11 @@ async def lifespan(app: FastAPI):
                        context_max_chars=settings.context_max_chars,
                        context_max_lines=settings.context_max_lines,
                        tool_cache=tool_cache,
-                       cacheable_tools=CACHEABLE_TOOLS)
+                       cacheable_tools=CACHEABLE_TOOLS,
+                       sensitive_terms=settings.sensitive_terms)
     app.state.settings = settings
     app.state.db = db
+    app.state.auth_secret = auth_secret
     app.state.checkpointer = checkpointer
     app.state.graph = graph
     app.state.tool_cache = tool_cache
@@ -77,17 +87,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title='PersonalCopilot', lifespan=lifespan)
 # CORS 白名单在应用创建时就要确定（此时 lifespan 尚未运行），单独读一次配置。
 # 部署到非默认端口/域名时设置环境变量 CORS_ORIGINS（JSON 数组）。
+_boot_settings = Settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=Settings().cors_origins,
+    allow_origins=_boot_settings.cors_origins,
     allow_credentials=False,
     allow_methods=['GET', 'POST', 'DELETE', 'OPTIONS'],
     allow_headers=['*'],
 )
+# 访问鉴权：按用户令牌（user_id 签名）隔离数据。注册/登录/健康检查放行。
+app.add_middleware(AuthMiddleware, secret=load_or_create_secret(_boot_settings.data_dir))
+app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(bills_router)
 app.include_router(cards_router)
 app.include_router(events_router)
+app.include_router(memory_router)
+app.include_router(reports_router)
 
 
 @app.get('/health')

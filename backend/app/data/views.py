@@ -23,7 +23,7 @@ def card_view(card: TrackingCard):
             'direction': card.direction, 'transaction_type': card.transaction_type,
             'counterparty': card.counterparty,
             'amount': money(card.amount_cents) if card.amount_cents is not None else None,
-            'occurred_at': card.occurred_at}
+            'occurred_at': card.occurred_at, 'lane': card.lane}
 
 
 def event_view(event: ScheduleEvent):

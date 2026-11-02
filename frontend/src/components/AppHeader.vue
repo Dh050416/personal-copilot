@@ -1,4 +1,17 @@
 <script setup lang="ts">
+import { computed } from "vue"
+import { useRouter } from "vue-router"
+import { getCurrentUser, logout } from "../services/agentClient"
+
+const router = useRouter()
+
+const username = computed(() => getCurrentUser()?.username ?? "")
+
+function handleLogout(): void {
+  logout()
+  router.replace({ name: "login" })
+}
+
 const NAV_ITEMS = [
   { to: "/", label: "对话", icon: "chat" },
   { to: "/board", label: "看板", icon: "board" },
@@ -47,6 +60,10 @@ const ICONS: Record<string, string> = {
         <span>{{ item.label }}</span>
       </RouterLink>
     </nav>
+    <div class="user-area">
+      <span class="user-name" :title="username">{{ username || "未登录" }}</span>
+      <button class="logout-btn" title="退出登录" @click="handleLogout">退出</button>
+    </div>
   </header>
 </template>
 
@@ -129,6 +146,36 @@ const ICONS: Record<string, string> = {
   flex-shrink: 0;
 }
 
+.user-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-name {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-btn {
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.logout-btn:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
 @media (max-width: 860px) {
   .app-header {
     padding: 10px 14px;
@@ -144,6 +191,11 @@ const ICONS: Record<string, string> = {
 
   .brand-sub {
     display: none;
+  }
+
+  .user-area {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 </style>

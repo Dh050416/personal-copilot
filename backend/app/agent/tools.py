@@ -22,6 +22,8 @@ from app.data.models import AgentMemory, Bill, IdempotencyRecord, ScheduleEvent,
 from app.data.views import bill_view, card_view, event_view
 from app.errors import ToolError
 from app.schemas import (
+    AddBillArgs,
+    BillView,
     CardBatchView,
     CardList,
     CardView,
@@ -44,17 +46,19 @@ from app.schemas import (
     WebSearchResult,
 )
 from app.services.card_service import complete_card, create_card
+from app.services.bill_service import add_bill as service_add_bill
 from app.services.schedule_service import complete_event as service_complete_event
 from app.services.schedule_service import create_event as service_create_event
 from app.services.schedule_service import update_event as service_update_event
 
 # 写工具集合：图遇到这些工具必须先走 interrupt 人工审批
-WRITE_TOOLS = frozenset({'create_tracking_card', 'complete_tracking_card', 'create_cards_from_query',
+WRITE_TOOLS = frozenset({'add_bill', 'create_tracking_card', 'complete_tracking_card', 'create_cards_from_query',
                          'create_event', 'complete_event', 'update_event'})
 # 可缓存工具：纯只读查询，结果在 TTL 内可复用（上下文卫生：同参重复查询不重跑库）
 CACHEABLE_TOOLS = frozenset({'query_bill', 'list_tracking_cards', 'web_search', 'list_events'})
 # 写工具所需权限（声明式，供网关/审计使用）
 TOOL_PERMISSIONS = {
+    'add_bill': ('billing:bill:create',),
     'create_tracking_card': ('billing:card:create',),
     'complete_tracking_card': ('billing:card:complete',),
     'create_cards_from_query': ('billing:card:create',),
@@ -67,6 +71,7 @@ TOOL_PERMISSIONS = {
 # 失败转 OUTPUT_INVALID 结构化错误（结果不进状态/前端/记忆）。未声明的工具不校验。
 OUTPUT_SCHEMAS = {
     'query_bill': QueryBillResult,
+    'add_bill': BillView,
     'create_tracking_card': CardView,
     'create_cards_from_query': CardBatchView,
     'complete_tracking_card': CardView,
@@ -85,6 +90,44 @@ OUTPUT_SCHEMAS = {
 # 2) StructuredTool.arun 会过滤多余 kwargs，额外参数传不进工具函数。
 # asyncio 单事件循环下由 Task 隔离，未来读工具并行执行也不互相污染。
 _IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar('idempotency_key', default=None)
+# 当前请求用户（多用户数据隔离）：由 chat.py 在发起 run 时经 config 设置，工具层读取
+# 后对所有数据读写按 user_id 过滤，确保不同账号之间数据完全隔离。
+_USER_ID: ContextVar[int | None] = ContextVar('user_id', default=None)
+
+
+def current_user_id() -> int:
+    """读取当前请求用户 id；未设置（理论上不会发生，鉴权中间件已保证）时抛错。"""
+    uid = _USER_ID.get()
+    if uid is None:
+        raise ToolError('NO_USER', '当前请求缺少用户身份，无法隔离数据',
+                        stage='policy', retryable=False)
+    return uid
+
+
+def bill_common_filters(args) -> list:
+    """query_bill 与 create_cards_from_query 共用的账单过滤条件（日期/交易类型/金额边界）。
+
+    抽出共享是为了杜绝两处平行演化导致语义分叉——曾出现 min_amount_inclusive
+    只加在 QueryBillArgs、批量建卡漏掉的事故（「超过 100」把正好 100 元的账单也建了卡）。
+    商户匹配方式/方向语义/分类等工具差异项由各工具自行追加。
+    """
+    filters = []
+    if args.start_date:
+        filters.append(Bill.tx_time >= datetime.combine(args.start_date, time.min).iso_format(timespec='seconds'))
+    if args.end_date:
+        filters.append(Bill.tx_time <= datetime.combine(args.end_date, time.max).iso_format(timespec='seconds'))
+    if args.transaction_type:
+        filters.append(Bill.transaction_type == args.transaction_type)
+    # 金额边界：inclusive=True 表示含边界（>= / <=）；用户说「超过 N」必须传 inclusive=False
+    if args.min_amount is not None:
+        bound = int(args.min_amount * 100)
+        filters.append(Bill.amount_cents >= bound if args.min_amount_inclusive
+                       else Bill.amount_cents > bound)
+    if args.max_amount is not None:
+        bound = int(args.max_amount * 100)
+        filters.append(Bill.amount_cents <= bound if args.max_amount_inclusive
+                       else Bill.amount_cents < bound)
+    return filters
 
 
 def build_tools(db):
@@ -99,7 +142,8 @@ def build_tools(db):
         结果较多时分页：用 offset 跳过已看部分、limit 控制每页条数。
         """
         args = QueryBillArgs.model_validate(kwargs)
-        filters = []
+        user_id = current_user_id()
+        filters = [Bill.user_id == user_id]
         if args.start_date:
             filters.append(Bill.tx_time >= datetime.combine(args.start_date, time.min).isoformat(timespec='seconds'))
         if args.end_date:
@@ -136,7 +180,8 @@ def build_tools(db):
         async with db.sessions() as session:
             for key, label in (('payment_method', '支付方式'), ('transaction_status', '交易状态')):
                 if getattr(args, key) and await session.scalar(
-                        select(func.count(Bill.id)).where(getattr(Bill, key) == '未知')):
+                        select(func.count(Bill.id)).where(
+                            Bill.user_id == user_id, getattr(Bill, key) == '未知')):
                     warnings.append(f'库中部分旧记录缺少{label}，请重新导入原始账单补齐；本次筛选不包含缺失记录。')
         total_text = format(total / 100, '.2f')
         result = QueryBillResult(
@@ -158,6 +203,26 @@ def build_tools(db):
             summary += '\n提示：' + '；'.join(warnings)
         return summary, result
 
+    @tool('add_bill', args_schema=AddBillArgs, response_format='content_and_artifact')
+    async def add_bill(**kwargs):
+        """随手记：手动录入一笔账单（不经过文件导入），必须经用户确认。
+
+        用于「刚发生的消费/转账、没有账单文件可导入」的场景，如「刚吃饭 AA 我付了 80 元」。
+        交易方向用 direction 表达（expense 支出 / income 收入），金额恒为正数；
+        「刚才/今天」等相对时间先换算成具体时间再传 occurred_at。
+        """
+        args = AddBillArgs.model_validate(kwargs)
+        view = await service_add_bill(db, current_user_id(), args, _IDEMPOTENCY_KEY.get())
+        sign = '-' if view['direction'] == 'expense' else '+'
+        summary = (f'已记一笔{view["direction"] == "expense" and "支出" or "收入"}：'
+                   f'{sign}¥{view["amount"]}（{view["category"]}'
+                   + (f'，{view["merchant"]}' if view['merchant'] else '')
+                   + f'，时间 {view["tx_time"]}）')
+        if view['note']:
+            summary += f'；备注：{view["note"]}'
+        summary += '。'
+        return summary, BillView(**view)
+
     @tool('create_tracking_card', args_schema=CreateTrackingCardArgs, response_format='content_and_artifact')
     async def create_tracking_card(**kwargs):
         """创建待办卡片，必须经用户确认。关联账单 ID 必须来自查询。
@@ -167,7 +232,7 @@ def build_tools(db):
         """
         args = CreateTrackingCardArgs.model_validate(kwargs)
         # 幂等：键 = 框架注入的 approval_id（同一次确认过的操作意图），服务层查重/重放，不重复建卡
-        view = await create_card(db, args, _IDEMPOTENCY_KEY.get())
+        view = await create_card(db, current_user_id(), args, _IDEMPOTENCY_KEY.get())
         summary = f'已创建{view["category"]}·{view["purpose"]}待办（卡片 ID：{view["id"]}）'
         if view['amount'] is not None:
             sign = '-' if view['direction'] == 'expense' else '+'
@@ -194,7 +259,8 @@ def build_tools(db):
         # 幂等键 = 框架注入的 approval_id。命中记录 → 重放首次结果；未命中 → 同事务建卡+写记录，
         # 保证「执行成功但响应超时后重试」不会二次建卡（批次无法共用单卡 invocation_id，用记录表存证）。
         key = _IDEMPOTENCY_KEY.get()
-        filters = []
+        user_id = current_user_id()
+        filters = [Bill.user_id == user_id]
         if args.start_date:
             filters.append(Bill.tx_time >= datetime.combine(args.start_date, time.min).isoformat(timespec='seconds'))
         if args.end_date:
@@ -203,12 +269,21 @@ def build_tools(db):
             filters.append(Bill.merchant.contains(args.merchant, autoescape=True))
         if args.transaction_type:
             filters.append(Bill.transaction_type == args.transaction_type)
+        if args.category:
+            # 消费分类筛选：之前批量工具漏了这个 filter，导致「把餐饮做成卡」会把全部分类都建出来
+            filters.append(Bill.category == args.category)
         if args.direction:
             filters.append(Bill.direction == args.direction)
+        # 金额边界：inclusive=True 表示含边界（>= / <=）；用户说「超过 N」必须传 inclusive=False
+        # （之前 min_amount 恒定按 >= 处理，「超过 100」会把正好 100 元的账单也建进卡）
         if args.min_amount is not None:
-            filters.append(Bill.amount_cents >= int(args.min_amount * 100))
+            bound = int(args.min_amount * 100)
+            filters.append(Bill.amount_cents >= bound if args.min_amount_inclusive
+                           else Bill.amount_cents > bound)
         if args.max_amount is not None:
-            filters.append(Bill.amount_cents <= int(args.max_amount * 100))
+            bound = int(args.max_amount * 100)
+            filters.append(Bill.amount_cents <= bound if args.max_amount_inclusive
+                           else Bill.amount_cents < bound)
 
         def classify(b):
             """分类优先级：use_bill_category（跟随账单分类）> category_rules 顺序命中 > card_category 兜底。"""
@@ -232,22 +307,38 @@ def build_tools(db):
             # （查重在事务内，避免会话先 autobegin 再显式 begin() 冲突）
             async with session.begin():
                 if key is not None:
-                    rec = await session.get(IdempotencyRecord, key)
+                    rec = await session.get(IdempotencyRecord, (user_id, key))
                     if rec is not None:
                         # 重放首次响应：内容与 artifact 与首次执行完全一致
                         return rec.content, CardBatchView.model_validate_json(rec.response_json)
                 bills = list(await session.scalars(
                     select(Bill).where(*filters).order_by(Bill.tx_time.asc(), Bill.id.asc()).limit(args.limit)))
+                # 按账单去重：这批账单里已经建过卡的（active/done 都算）直接跳过。
+                # 没有这一步时，同一句话跑第二遍会把整批账单再建一遍（曾出现同一 bill 挂 3 张卡）。
+                skipped = 0
+                existing_bill_ids = set()
+                if bills:
+                    existing_bill_ids = set(await session.scalars(
+                        select(TrackingCard.bill_id).where(
+                            TrackingCard.user_id == user_id,
+                            TrackingCard.bill_id.in_([b.id for b in bills]))))
                 for b in bills:
+                    if b.id in existing_bill_ids:
+                        skipped += 1
+                        continue
                     amount_cents = b.amount_cents
                     if amount_cents is not None:
                         total_cents += amount_cents
                     cards.append(TrackingCard(
-                        bill_id=b.id, category=classify(b), purpose=args.purpose,
+                        user_id=user_id, bill_id=b.id, category=classify(b), purpose=args.purpose,
                         note=args.note, direction=b.direction or 'expense',
                         transaction_type=b.transaction_type or '其他',
                         counterparty=b.merchant or '', amount_cents=amount_cents,
-                        occurred_at=b.tx_time or '', invocation_id=uuid4().hex,
+                        occurred_at=b.tx_time or '',
+                        # 用户显式指定的看板栏目（lane）必须原样落库；漏传会导致
+                        # 前端 laneFor() 退回 purpose=报销 → 全部堆进「未报销」栏。
+                        lane=args.lane,
+                        invocation_id=uuid4().hex,
                     ))
                 views = []
                 if cards:
@@ -268,7 +359,7 @@ def build_tools(db):
                     batch = CardBatchView(total=len(views), card_ids=[v['id'] for v in views],
                                           total_amount=total_text, items=views)
                     if key is not None:
-                        session.add(IdempotencyRecord(key=key, content=summary,
+                        session.add(IdempotencyRecord(user_id=user_id, key=key, content=summary,
                                                       response_json=batch.model_dump_json()))
         if not views:
             return '查询范围内没有匹配的账单，未创建卡片。', CardBatchView(
@@ -283,7 +374,7 @@ def build_tools(db):
         卡片 ID 必须来自 list_tracking_cards 查询结果；幂等：已完成的卡片重复操作直接返回成功。
         """
         args = CompleteTrackingCardArgs.model_validate(kwargs)
-        view = await complete_card(db, args.card_id)
+        view = await complete_card(db, current_user_id(), args.card_id)
         summary = f'已将{view["category"]}·{view["purpose"]}待办（卡片 ID：{view["id"]}）标记为已完成。'
         return summary, CardView(**view)
 
@@ -295,14 +386,15 @@ def build_tools(db):
         key 用简短可读的中文短语；重复保存同一 key 会覆盖更新。
         """
         args = SaveMemoryArgs.model_validate(kwargs)
+        user_id = current_user_id()
         async with db.sessions() as session:
             async with session.begin():
-                existing = await session.get(AgentMemory, args.key)
+                existing = await session.get(AgentMemory, (user_id, args.key))
                 if existing is not None:
                     existing.value = args.value
                     existing.updated_at = now_iso()
                 else:
-                    session.add(AgentMemory(key=args.key, value=args.value, updated_at=now_iso()))
+                    session.add(AgentMemory(user_id=user_id, key=args.key, value=args.value, updated_at=now_iso()))
         return f'已记住：{args.key} = {args.value}', SaveMemoryResult(key=args.key, value=args.value)
 
     @tool('list_tracking_cards', args_schema=ListTrackingCardsArgs,
@@ -313,11 +405,14 @@ def build_tools(db):
         卡片较多时只读本页摘要即可；需要更多用 offset 继续查询，避免一次带回全量。
         """
         args = ListTrackingCardsArgs.model_validate(kwargs)
+        user_id = current_user_id()
         async with db.sessions() as session:
             cards = await session.scalars(
-                select(TrackingCard).order_by(TrackingCard.id.desc()).offset(args.offset).limit(args.limit))
+                select(TrackingCard).where(TrackingCard.user_id == user_id)
+                .order_by(TrackingCard.id.desc()).offset(args.offset).limit(args.limit))
             views = [card_view(card) for card in cards]
-            total = await session.scalar(select(func.count(TrackingCard.id)))
+            total = await session.scalar(select(func.count(TrackingCard.id)).where(
+                TrackingCard.user_id == user_id))
         if not views:
             return '目前没有事务卡片。', CardList(items=[])
         summary = f'最近的事务卡片（本页 {len(views)} 张）：\n'
@@ -385,7 +480,8 @@ def build_tools(db):
         结果较多时用 offset/limit 翻页。
         """
         args = ListEventsArgs.model_validate(kwargs)
-        filters = []
+        user_id = current_user_id()
+        filters = [ScheduleEvent.user_id == user_id]
         if args.start_date:
             filters.append(ScheduleEvent.start_at >= args.start_date.isoformat())
         if args.end_date:
@@ -416,7 +512,7 @@ def build_tools(db):
     async def create_event(**kwargs):
         """新建日程，必须经用户确认。时间支持 YYYY-MM-DD（全天）或 YYYY-MM-DDTHH:MM（精确到分）。"""
         args = CreateEventArgs.model_validate(kwargs)
-        view = await service_create_event(db, args, _IDEMPOTENCY_KEY.get())
+        view = await service_create_event(db, current_user_id(), args, _IDEMPOTENCY_KEY.get())
         summary = f'已创建日程 #{view["id"]}「{view["title"]}」'
         summary += f'；{view["start_at"]}'
         if view['end_at']:
@@ -430,14 +526,14 @@ def build_tools(db):
     async def complete_event(**kwargs):
         """标记日程为已完成，必须经用户确认。日程 ID 必须来自查询结果。"""
         args = CompleteEventArgs.model_validate(kwargs)
-        view = await service_complete_event(db, args.event_id)
+        view = await service_complete_event(db, current_user_id(), args.event_id)
         return f'已标记日程 #{view["id"]}「{view["title"]}」为完成。', EventView(**view)
 
     @tool('update_event', args_schema=UpdateEventArgs, response_format='content_and_artifact')
     async def update_event(**kwargs):
         """修改日程（改期/改标题/改地点/改备注），必须经用户确认。日程 ID 必须来自查询结果。"""
         args = UpdateEventArgs.model_validate(kwargs)
-        view = await service_update_event(db, args)
+        view = await service_update_event(db, current_user_id(), args)
         summary = f'已更新日程 #{view["id"]}「{view["title"]}」'
         summary += f'；{view["start_at"]}'
         if view['end_at']:

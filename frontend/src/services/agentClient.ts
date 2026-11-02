@@ -17,6 +17,122 @@ export const API_BASE: string = (import.meta.env.VITE_API_BASE ?? "http://127.0.
   "",
 )
 
+/** 用户令牌（localStorage 持久化）。登录成功后由后端签发，所有请求经 Bearer 携带。 */
+const TOKEN_KEY = "copilot_access_token"
+const USER_KEY = "copilot_user"
+
+export interface CurrentUser {
+  id: number
+  username: string
+}
+
+export function getAccessToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? ""
+  } catch {
+    return ""
+  }
+}
+
+export function setAccessToken(token: string): void {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    /* localStorage 不可用时静默降级 */
+  }
+}
+
+export function getCurrentUser(): CurrentUser | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY)
+    return raw ? (JSON.parse(raw) as CurrentUser) : null
+  } catch {
+    return null
+  }
+}
+
+export function setCurrentUser(user: CurrentUser | null): void {
+  try {
+    if (user) localStorage.setItem(USER_KEY, JSON.stringify(user))
+    else localStorage.removeItem(USER_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function isLoggedIn(): boolean {
+  return getAccessToken() !== ""
+}
+
+/** 登出：清空令牌与用户信息。 */
+export function logout(): void {
+  setAccessToken("")
+  setCurrentUser(null)
+}
+
+/** 登录/注册成功后统一写入凭证。 */
+function applyAuth(token: string, user: CurrentUser): void {
+  setAccessToken(token)
+  setCurrentUser(user)
+}
+
+/** 统一构造鉴权头：有 token 则附带 Bearer。 */
+function authHeaders(): Record<string, string> {
+  const token = getAccessToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/** 注册新账号，成功返回并写入凭证。 */
+export async function register(username: string, password: string): Promise<CurrentUser> {
+  const response = await fetch(`${API_BASE}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  })
+  const data = (await response.json()) as { token?: string; user?: CurrentUser; detail?: string }
+  if (!response.ok || !data.token || !data.user) {
+    throw new Error(data.detail || "注册失败")
+  }
+  applyAuth(data.token, data.user)
+  return data.user
+}
+
+/** 登录，成功返回并写入凭证。 */
+export async function login(username: string, password: string): Promise<CurrentUser> {
+  const response = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  })
+  const data = (await response.json()) as { token?: string; user?: CurrentUser; detail?: string }
+  if (!response.ok || !data.token || !data.user) {
+    throw new Error(data.detail || "登录失败")
+  }
+  applyAuth(data.token, data.user)
+  return data.user
+}
+
+/** 401 未登录统一处理：清凭证并跳转登录页（由 router 守卫或调用方触发）。 */
+let onUnauthorized: (() => void) | null = null
+
+export function setOnUnauthorized(handler: (() => void) | null): void {
+  onUnauthorized = handler
+}
+
+function handleUnauthorized(): void {
+  logout()
+  if (onUnauthorized) onUnauthorized()
+}
+
+/** 校验当前令牌是否仍有效，返回用户信息。 */
+export async function fetchMe(): Promise<CurrentUser> {
+  const response = await fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders() })
+  const data = (await response.json()) as CurrentUser & { detail?: string }
+  if (!response.ok) throw new Error(data.detail || "登录已失效")
+  return data
+}
+
 async function consume(response: Response, onEvent: (event: AgentEvent) => void): Promise<void> {
   const reader = response.body?.getReader()
   if (!reader) throw new Error("浏览器不支持流式响应")
@@ -45,11 +161,23 @@ async function consume(response: Response, onEvent: (event: AgentEvent) => void)
 }
 
 async function postJson(path: string, body: unknown): Promise<Response> {
-  return fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   })
+  if (response.status === 401) handleUnauthorized()
+  return response
+}
+
+/** 带鉴权的通用 fetch：自动附加 Bearer，401 时清凭证并跳登录。 */
+async function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(url, {
+    ...init,
+    headers: { ...authHeaders(), ...(init.headers || {}) },
+  })
+  if (response.status === 401) handleUnauthorized()
+  return response
 }
 
 /** 发送一条用户消息，逐事件回调；sessionId 用于多轮上下文衔接（缺省=新会话）。
@@ -90,7 +218,10 @@ export async function resume(
 export async function importBills(file: File): Promise<unknown> {
   const body = new FormData()
   body.append("file", file)
-  const response = await fetch(`${API_BASE}/api/bills/import`, { method: "POST", body })
+  const response = await authedFetch(`${API_BASE}/api/bills/import`, {
+    method: "POST",
+    body,
+  })
   const report = (await response.json()) as unknown
   if (!response.ok) {
     const detail = (report as { detail?: string })?.detail
@@ -124,9 +255,30 @@ export async function confirmCategory(billId: number, category: string): Promise
   return data
 }
 
+/** 随手记：直接写入一笔账单（不走 Agent/模型），source=manual */
+export interface AddBillInput {
+  amount: number
+  direction: "expense" | "income"
+  category: string
+  merchant?: string
+  note?: string
+}
+
+export async function addBill(input: AddBillInput): Promise<unknown> {
+  const response = await postJson("/api/bills", input)
+  const data = (await response.json()) as unknown
+  if (!response.ok) {
+    const detail = (data as { detail?: string })?.detail
+    throw new Error(detail || "手记保存失败")
+  }
+  return data
+}
+
 /** 将跟踪卡标记为已完成（看板拖拽到「已完成」区） */
 export async function completeCard(cardId: number): Promise<unknown> {
-  const response = await fetch(`${API_BASE}/api/cards/${cardId}/complete`, { method: "POST" })
+  const response = await authedFetch(`${API_BASE}/api/cards/${cardId}/complete`, {
+    method: "POST",
+  })
   const data = (await response.json()) as unknown
   if (!response.ok) {
     const detail = (data as { detail?: string })?.detail
@@ -135,9 +287,32 @@ export async function completeCard(cardId: number): Promise<unknown> {
   return data
 }
 
+/** 看板直连新建跟踪卡（确定性录入，不走 Agent/审批） */
+export interface CreateCardInput {
+  category: string
+  purpose: "报销" | "退款" | "待退订" | "AA" | "待处理"
+  direction?: "expense" | "income"
+  counterparty?: string
+  amount?: number
+  note?: string
+  lane?: string
+}
+
+export async function createTrackingCard(input: CreateCardInput): Promise<unknown> {
+  const response = await postJson("/api/cards", input)
+  const data = (await response.json()) as unknown
+  if (!response.ok) {
+    const detail = (data as { detail?: string })?.detail
+    throw new Error(detail || "新建卡片失败")
+  }
+  return data
+}
+
 /** 删除已完成卡片（仅 done 状态；不可恢复） */
 export async function deleteCard(cardId: number): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/cards/${cardId}`, { method: "DELETE" })
+  const response = await authedFetch(`${API_BASE}/api/cards/${cardId}`, {
+    method: "DELETE",
+  })
   const data = (await response.json()) as unknown
   if (!response.ok) {
     const detail = (data as { detail?: string })?.detail
@@ -165,7 +340,7 @@ export async function getCards(params: { status?: "active" | "done" } = {}): Pro
   const qs = new URLSearchParams()
   if (params.status) qs.set("status", params.status)
   const url = `${API_BASE}/api/cards${qs.toString() ? `?${qs.toString()}` : ""}`
-  const response = await fetch(url)
+  const response = await authedFetch(url)
   if (!response.ok) throw new Error(`卡片查询失败（HTTP ${response.status}）`)
   const data = (await response.json()) as { items: TrackingCardItem[] }
   return data.items
@@ -193,8 +368,91 @@ export async function getEvents(params: {
   if (params.end_date) qs.set("end_date", params.end_date)
   if (params.status && params.status !== "all") qs.set("status", params.status)
   const url = `${API_BASE}/api/events${qs.toString() ? `?${qs.toString()}` : ""}`
-  const response = await fetch(url)
+  const response = await authedFetch(url)
   if (!response.ok) throw new Error(`日程查询失败（HTTP ${response.status}）`)
   const data = (await response.json()) as { items: EventItem[] }
   return data.items
+}
+
+/** 长期记忆条目 */
+export interface MemoryItem {
+  key: string
+  value: string
+  updated_at: string
+}
+
+/** 列出全部长期记忆（设置页） */
+export async function getMemories(): Promise<MemoryItem[]> {
+  const response = await authedFetch(`${API_BASE}/api/memory`)
+  if (!response.ok) throw new Error(`记忆查询失败（HTTP ${response.status}）`)
+  const data = (await response.json()) as { items: MemoryItem[] }
+  return data.items
+}
+
+/** 新增/覆盖一条记忆 */
+export async function upsertMemory(key: string, value: string): Promise<MemoryItem> {
+  const response = await authedFetch(`${API_BASE}/api/memory`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, value }),
+  })
+  const data = (await response.json()) as unknown
+  if (!response.ok) {
+    const detail = (data as { detail?: string })?.detail
+    throw new Error(detail || "记忆保存失败")
+  }
+  return data as MemoryItem
+}
+
+/** 删除一条记忆 */
+export async function deleteMemory(key: string): Promise<void> {
+  const response = await authedFetch(`${API_BASE}/api/memory/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+  })
+  if (!response.ok) {
+    const data = (await response.json()) as unknown
+    const detail = (data as { detail?: string })?.detail
+    throw new Error(detail || "记忆删除失败")
+  }
+}
+
+/** 消费报表：分类占比条目 */
+export interface ReportCategoryItem {
+  category: string
+  amount: string
+  amount_cents: number
+}
+
+/** 消费报表：月度收支条目 */
+export interface ReportMonthItem {
+  month: string
+  expense: string
+  income: string
+  expense_cents: number
+  income_cents: number
+}
+
+/** 消费报表汇总 */
+export interface ReportSummary {
+  total_expense: string
+  total_income: string
+  bill_count: number
+  total_expense_cents: number
+  total_income_cents: number
+  categories: ReportCategoryItem[]
+  monthly: ReportMonthItem[]
+}
+
+/** 获取消费报表汇总（可选日期区间，闭区间） */
+export async function getReportSummary(params: {
+  start_date?: string
+  end_date?: string
+} = {}): Promise<ReportSummary> {
+  const qs = new URLSearchParams()
+  if (params.start_date) qs.set("start_date", params.start_date)
+  if (params.end_date) qs.set("end_date", params.end_date)
+  const url = `${API_BASE}/api/reports/summary${qs.toString() ? `?${qs.toString()}` : ""}`
+  const response = await authedFetch(url)
+  if (!response.ok) throw new Error(`报表查询失败（HTTP ${response.status}）`)
+  return (await response.json()) as ReportSummary
 }

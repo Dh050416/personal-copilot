@@ -6,6 +6,7 @@ import { classifyExisting, importBills } from "../services/agentClient"
 import { useNotBuilt } from "../composables/useNotBuilt"
 import NotBuiltNotice from "../components/NotBuiltNotice.vue"
 import BillTable from "../components/BillTable.vue"
+import QuickAddBill from "../components/QuickAddBill.vue"
 
 const store = useSessionStore()
 const { notice, show } = useNotBuilt()
@@ -73,7 +74,7 @@ async function classify(): Promise<void> {
         </div>
         <div class="actions">
           <button class="btn btn-primary" :disabled="store.busy" @click="pickFile">⬆ 上传账单</button>
-          <button class="btn" @click="show('即时手记')">✍ 即时手记</button>
+          <QuickAddBill />
           <button class="btn" @click="show('OCR 截图')">📷 OCR 截图</button>
           <button class="btn" @click="show('搜索')">🔍 搜索</button>
           <input

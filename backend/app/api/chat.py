@@ -11,6 +11,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from app.agent.graph import initial_input
+from app.agent.tools import _USER_ID
 from app.observability import langfuse_callbacks
 from app.schemas import ChatRequest, ResumeRequest
 
@@ -221,7 +222,7 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
                                 if max_tool_calls and calls_now >= max_tool_calls:
                                     queue.put_nowait(_sse(run_id, {'type': 'final', 'payload': {
                                         'text': f'这次任务执行的工具调用次数超过了上限（{max_tool_calls} 次），'
-                                                '已安全停止；可把任务拆小或换个更简洁的说法重试。',
+                                                '已安全停止；继续提问会重新计数，也可以把任务拆小一点重试。',
                                     }}))
                                     return
                     except GraphRecursionError:
@@ -299,80 +300,104 @@ async def chat(payload: ChatRequest, request: Request):
     """多轮会话：同一 session_id 复用 thread，消息追加进 checkpoint 历史实现上下文衔接；
     首轮注入 System+Human，续轮只追加 Human。
     执行中追加（检查点注入）：thread 正忙时新消息进入 pending 队列，返回 {queued:true}；
-    循环 runner 在下个输入检查点把它注入并继续，无需重跑已完成步骤。"""
-    thread_id = payload.session_id or uuid4().hex
-    graph = request.app.state.graph
-    rt = _thread_runtime(request.app.state, thread_id)
-    if rt['active']:
-        # 已有执行流在跑：入队，让当前 run 的 runner 在输入检查点消费（串行，不并发写 checkpoint）
-        rt['pending'].append(payload.message)
-        return {'queued': True,
-                'message': '已加入队列，将在当前任务的下一个检查点追加。'}
-    rt['active'] = True
-    rt['waiting_approval'] = False
-    rt['tool_calls'] = 0  # 新 run 重置工具调用计数（审批续跑在 resume 端点保留，累计同一任务成本）
-    config = {'configurable': {'thread_id': thread_id}}
-    snapshot = await graph.aget_state(config)
-    seen_start = 0
-    if snapshot.values.get('messages'):
-        # 续轮：显式携带历史（AgentState.messages 无 add_messages reducer，输入会整体替换而非追加）
-        history = _trim_history(snapshot.values['messages'])
-        messages = [*history, HumanMessage(content=payload.message)]
-        seen_start = len(snapshot.values.get('events', []))
-    else:
-        messages = initial_input(thread_id, payload.message)['messages']
-    # 合并上一轮 END 竞态残留的排队输入（时序上晚于最后一个输入检查点到达的消息）
-    leftovers = list(rt['pending'])
-    rt['pending'].clear()
-    for text in leftovers:
-        messages.append(HumanMessage(content=text))
-    graph_input = {'messages': messages}
-    settings = getattr(request.app.state, 'settings', None)
-    return stream_graph(graph, graph_input, thread_id, request.app.state.checkpointer,
-                        seen_start=seen_start, runtime=rt,
-                        max_steps=getattr(settings, 'max_steps', None),
-                        run_timeout=getattr(settings, 'run_timeout_seconds', None),
-                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None))
+    循环 runner 在下个输入检查点把它注入并继续，无需重跑已完成步骤。
+    多用户隔离：thread_id 前缀 user_id，且工具层经 _USER_ID 上下文按用户过滤数据。"""
+    user_id = request.state.user_id
+    # 会话/线程按用户隔离：即使不同用户碰巧用同一 session_id，checkpoint 与运行时也互不串扰
+    raw_session = payload.session_id or uuid4().hex
+    thread_id = f'u{user_id}:{raw_session}'
+    # 工具层数据隔离：整个 run 生命周期内，工具读取 _USER_ID 得到当前用户
+    token = _USER_ID.set(user_id)
+    try:
+        graph = request.app.state.graph
+        rt = _thread_runtime(request.app.state, thread_id)
+        if rt['active']:
+            # 已有执行流在跑：入队，让当前 run 的 runner 在输入检查点消费（串行，不并发写 checkpoint）
+            rt['pending'].append(payload.message)
+            return {'queued': True,
+                    'message': '已加入队列，将在当前任务的下一个检查点追加。'}
+        rt['active'] = True
+        rt['waiting_approval'] = False
+        rt['tool_calls'] = 0  # 新 run 重置工具调用计数（审批续跑在 resume 端点保留，累计同一任务成本）
+        config = {'configurable': {'thread_id': thread_id}}
+        snapshot = await graph.aget_state(config)
+        seen_start = 0
+        if snapshot.values.get('messages'):
+            # 续轮：显式携带历史（AgentState.messages 无 add_messages reducer，输入会整体替换而非追加）
+            history = _trim_history(snapshot.values['messages'])
+            messages = [*history, HumanMessage(content=payload.message)]
+            seen_start = len(snapshot.values.get('events', []))
+        else:
+            messages = initial_input(thread_id, payload.message)['messages']
+        # 合并上一轮 END 竞态残留的排队输入（时序上晚于最后一个输入检查点到达的消息）
+        leftovers = list(rt['pending'])
+        rt['pending'].clear()
+        for text in leftovers:
+            messages.append(HumanMessage(content=text))
+        # 新一轮用户提问 = 新任务：必须把工具调用计数归零。
+        # tool_calls_done 是 AgentState 的持久字段（写在 checkpoint 里，子图计数也会回写主图），
+        # 不重置会让「每次 run 上限 N 次」的护栏退化成「每个会话终身 N 次」：
+        # 触顶后 agent 节点在调用模型前就返回上限提示，之后每一轮都立刻被拦，会话永久失效。
+        # 审批 resume 端点刻意不重置：同一任务跨审批续跑仍累计成本（见 /runs/{id}/resume）。
+        graph_input = {'messages': messages, 'tool_calls_done': 0}
+        settings = getattr(request.app.state, 'settings', None)
+        return stream_graph(graph, graph_input, thread_id, request.app.state.checkpointer,
+                            seen_start=seen_start, runtime=rt,
+                            max_steps=getattr(settings, 'max_steps', None),
+                            run_timeout=getattr(settings, 'run_timeout_seconds', None),
+                            max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None))
+    finally:
+        _USER_ID.reset(token)
 
 
 @router.post('/runs/{run_id}/resume')
 async def resume(run_id: str, payload: ResumeRequest, request: Request):
-    graph = request.app.state.graph
-    config = {'configurable': {'thread_id': run_id}}
-    snapshot = await graph.aget_state(config)
-    if not snapshot.values:
+    user_id = request.state.user_id
+    # 审批 run 的 thread_id 由 chat 端点以 `u{user_id}:` 前缀生成，此处强制校验归属，
+    # 防止用户 A 通过伪造 run_id 恢复/干扰用户 B 的挂起审批。
+    expected_prefix = f'u{user_id}:'
+    if not run_id.startswith(expected_prefix):
         raise HTTPException(404, '运行不存在')
-    pending = False
-    created_at = None
-    for task in snapshot.tasks:
-        for inter in task.interrupts:
-            value = inter.value
-            if isinstance(value, dict) and value.get('approval_id') == payload.approval_id:
-                pending = True
-                created_at = value.get('created_at')
-    if not pending:
-        raise HTTPException(409, '运行未等待此审批')
-    settings = getattr(request.app.state, 'settings', None)
-    # 审批 TTL：审批创建后超过 approval_ttl_seconds 未处理视为过期，拒绝恢复并提示重新发起
-    ttl = getattr(settings, 'approval_ttl_seconds', None)
-    if ttl and created_at:
-        try:
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(created_at)).total_seconds()
-        except (ValueError, TypeError):
-            age = 0
-        if age > ttl:
-            raise HTTPException(410, f'审批已过期（超过 {ttl} 秒），请重新发起该操作')
-    decision = {'decision': payload.decision, 'approval_id': payload.approval_id}
-    if payload.edited_args is not None:
-        decision['edited_args'] = payload.edited_args
-    seen_start = len(snapshot.values.get('events', [])) if snapshot.values else 0
-    # 审批期间用户追加的输入在 pending 队列里，resume 后由循环 runner 在下一检查点注入
-    rt = _thread_runtime(request.app.state, run_id)
-    rt['active'] = True
-    rt['waiting_approval'] = False
-    # 注意：不重置 rt['tool_calls']——审批续跑与同一任务累计成本，工具调用次数护栏跨段生效
-    return stream_graph(graph, Command(resume=decision), run_id, request.app.state.checkpointer,
-                        seen_start=seen_start, runtime=rt,
-                        max_steps=getattr(settings, 'max_steps', None),
-                        run_timeout=getattr(settings, 'run_timeout_seconds', None),
-                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None))
+    token = _USER_ID.set(user_id)
+    try:
+        graph = request.app.state.graph
+        config = {'configurable': {'thread_id': run_id}}
+        snapshot = await graph.aget_state(config)
+        if not snapshot.values:
+            raise HTTPException(404, '运行不存在')
+        pending = False
+        created_at = None
+        for task in snapshot.tasks:
+            for inter in task.interrupts:
+                value = inter.value
+                if isinstance(value, dict) and value.get('approval_id') == payload.approval_id:
+                    pending = True
+                    created_at = value.get('created_at')
+        if not pending:
+            raise HTTPException(409, '运行未等待此审批')
+        settings = getattr(request.app.state, 'settings', None)
+        # 审批 TTL：审批创建后超过 approval_ttl_seconds 未处理视为过期，拒绝恢复并提示重新发起
+        ttl = getattr(settings, 'approval_ttl_seconds', None)
+        if ttl and created_at:
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(created_at)).total_seconds()
+            except (ValueError, TypeError):
+                age = 0
+            if age > ttl:
+                raise HTTPException(410, f'审批已过期（超过 {ttl} 秒），请重新发起该操作')
+        decision = {'decision': payload.decision, 'approval_id': payload.approval_id}
+        if payload.edited_args is not None:
+            decision['edited_args'] = payload.edited_args
+        seen_start = len(snapshot.values.get('events', [])) if snapshot.values else 0
+        # 审批期间用户追加的输入在 pending 队列里，resume 后由循环 runner 在下一检查点注入
+        rt = _thread_runtime(request.app.state, run_id)
+        rt['active'] = True
+        rt['waiting_approval'] = False
+        # 注意：不重置 rt['tool_calls']——审批续跑与同一任务累计成本，工具调用次数护栏跨段生效
+        return stream_graph(graph, Command(resume=decision), run_id, request.app.state.checkpointer,
+                            seen_start=seen_start, runtime=rt,
+                            max_steps=getattr(settings, 'max_steps', None),
+                            run_timeout=getattr(settings, 'run_timeout_seconds', None),
+                            max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None))
+    finally:
+        _USER_ID.reset(token)

@@ -179,8 +179,12 @@ async def test_tool_batch_same_key_replays_batch(ctx):
 
 
 @pytest.mark.asyncio
-async def test_tool_batch_different_keys_duplicate_expected(ctx):
-    """批量不同键（两次不同的操作意图）→ 正常翻倍建卡。"""
+async def test_tool_batch_different_keys_skips_existing_bills(ctx):
+    """批量不同键（两次不同的操作意图）→ 第二次按账单去重，不再重复建卡。
+
+    旧语义是「不同幂等键就正常翻倍建卡」，结果同一句话跑第二遍会把整批账单再建一遍
+    （线上出现同一 bill 挂 3 张卡）。现在按 bill_id 去重：已有卡的账单直接跳过。
+    """
     await seed_bills(ctx['db'])
     tool_obj = next(t for t in ctx['tools'] if t.name == 'create_cards_from_query')
     args = {'card_category': '餐饮', 'purpose': '报销'}
@@ -189,13 +193,14 @@ async def test_tool_batch_different_keys_duplicate_expected(ctx):
         _, b1 = await _invoke(tool_obj, args)
     finally:
         _IDEMPOTENCY_KEY.reset(token)
+    assert len(b1.items) == 3
     token = _IDEMPOTENCY_KEY.set('apr-batch-2')
     try:
         _, b2 = await _invoke(tool_obj, args)
     finally:
         _IDEMPOTENCY_KEY.reset(token)
-    assert len(b2.items) == 3
-    assert await card_count(ctx['db']) == 6
+    assert len(b2.items) == 0
+    assert await card_count(ctx['db']) == 3
 
 
 # ---------- 图级端到端：approval_id → run_tools 注入 → 重试安全 ----------

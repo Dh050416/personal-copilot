@@ -12,10 +12,20 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    """用户账号：每个用户一个独立的生活管家（数据按 user_id 隔离）。"""
+    __tablename__ = 'users'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[str] = mapped_column(default=now_iso)
+
+
 class Bill(Base):
     __tablename__ = 'bills'
-    __table_args__ = (UniqueConstraint('source', 'tx_no'),)
+    __table_args__ = (UniqueConstraint('user_id', 'source', 'tx_no'),)
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
     tx_no: Mapped[str] = mapped_column(String(128))
     tx_time: Mapped[str] = mapped_column(String(32), index=True)
     merchant: Mapped[str] = mapped_column(String(255))
@@ -41,6 +51,7 @@ class Bill(Base):
 class ImportBatch(Base):
     __tablename__ = 'import_batches'
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
     filename: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[str] = mapped_column(default=now_iso)
     report_json: Mapped[str] = mapped_column(Text)
@@ -49,6 +60,7 @@ class ImportBatch(Base):
 class TrackingCard(Base):
     __tablename__ = 'tracking_cards'
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
     bill_id: Mapped[int | None] = mapped_column(ForeignKey('bills.id'), nullable=True)
     category: Mapped[str] = mapped_column(String(64))
     purpose: Mapped[str] = mapped_column(String(64))
@@ -60,13 +72,17 @@ class TrackingCard(Base):
     occurred_at: Mapped[str] = mapped_column(String(32), default='')
     status: Mapped[str] = mapped_column(default='active')
     note: Mapped[str] = mapped_column(Text, default='')
+    # 泳道（看板栏目）：用户明确说「放在 XX 栏目」时原样写入；NULL = 按分类/用途推导
+    lane: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     invocation_id: Mapped[str] = mapped_column(String(128), unique=True)
     created_at: Mapped[str] = mapped_column(default=now_iso)
 
 
 class AgentMemory(Base):
-    """长期记忆：用户明确表达的事实/偏好（key-value，跨会话持久，全量注入 system）。"""
+    """长期记忆：用户明确表达的事实/偏好（key-value，跨会话持久，全量注入 system）。
+    按 user_id 隔离：每个用户有自己的一份记忆。"""
     __tablename__ = 'agent_memory'
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(String(40), default=now_iso)
@@ -77,8 +93,9 @@ class IdempotencyRecord(Base):
 
     命中记录时重放首次执行的响应（content + artifact），保证重试/重复提交不产生第二次副作用。
     单卡工具直接复用 tracking_cards.invocation_id 唯一约束查重；批量工具（一次建 N 张卡）
-    无法共用单卡键，用本表以「批次键 → 首次响应」存证。"""
+    无法共用单卡键，用本表以「批次键 → 首次响应」存证。按 user_id 隔离。"""
     __tablename__ = 'idempotency_records'
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     content: Mapped[str] = mapped_column(Text, default='')
     response_json: Mapped[str] = mapped_column(Text)
@@ -90,6 +107,7 @@ class ScheduleEvent(Base):
     写操作（建/完成/改期）与卡片一致走 HITL 审批与幂等（invocation_id=approval_id）。"""
     __tablename__ = 'schedule_events'
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
     title: Mapped[str] = mapped_column(String(255))
     start_at: Mapped[str] = mapped_column(String(32), index=True)
     end_at: Mapped[str] = mapped_column(String(32), default='')

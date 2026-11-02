@@ -16,6 +16,26 @@ class ChatRequest(StrictModel):
                                    description='会话 ID：同一会话的后续消息共用它作为 thread，模型得以衔接上下文；缺省时开启新会话。')
 
 
+class RegisterRequest(StrictModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class LoginRequest(StrictModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class UserView(StrictModel):
+    id: int
+    username: str
+
+
+class AuthResponse(StrictModel):
+    token: str
+    user: UserView
+
+
 class ResumeRequest(StrictModel):
     approval_id: str
     decision: Literal['approve', 'reject']
@@ -76,6 +96,11 @@ class CreateTrackingCardArgs(StrictModel):
     occurred_at: str | None = Field(default=None, max_length=32,
                                     description='交易发生时间，ISO 格式，如 2026-09-01T10:00:00。')
     note: str = Field(default='', max_length=500)
+    lane: Literal['未报销', '订阅', '餐饮', '交通', 'AA', '其他'] | None = Field(
+        default=None,
+        description='卡片放到看板哪个栏目（泳道）。仅当用户明确说出栏目名（如「放在未报销一行里」）时'
+                    '原样传入该栏目名，不得自行推断、改写或换栏目；用户没说就不要传。'
+                    '注意：lane 是看板栏目，不是消费分类，别把消费分类填到这里。')
 
 
 class CardBatchRule(StrictModel):
@@ -103,24 +128,43 @@ class CreateCardsFromQueryArgs(StrictModel):
                                  description='商户或转账对方名称，按字面包含匹配。')
     transaction_type: str | None = Field(default=None, min_length=1, max_length=64,
                                          description='交易类型精确匹配，例如转账。')
+    category: str | None = Field(
+        default=None, min_length=1, max_length=64,
+        description='按账单的消费分类筛选（如餐饮/交通/购物/订阅）；'
+                    '必须与 query_bill 上次查询用的分类一致，否则建卡范围会跑偏。')
     direction: Literal['income', 'expense'] | None = Field(
         default=None, description='交易方向筛选：支出 expense / 收入 income；不填则不筛。')
-    min_amount: Decimal | None = Field(default=None, ge=0, le=9999999999.99, decimal_places=2)
+    min_amount: Decimal | None = Field(
+        default=None, ge=0, le=9999999999.99, decimal_places=2,
+        description='金额下界，单位元。用户说「超过/大于 N」时必须把 min_amount_inclusive 设为 false；'
+                    '默认 true 表示「N 及以上（含 N）」。')
     max_amount: Decimal | None = Field(default=None, ge=0, le=9999999999.99, decimal_places=2)
+    min_amount_inclusive: bool = Field(
+        default=True, strict=True,
+        description='min_amount 是否含边界：true => 大于等于；false => 严格大于（「超过 100」用 false）。')
+    max_amount_inclusive: bool = Field(
+        default=True, strict=True,
+        description='max_amount 是否含边界：true => 小于等于；false => 严格小于。')
     limit: int = Field(default=100, ge=1, le=500,
                        description='最多为多少笔匹配记录建卡，防止误操作超量。')
     card_category: str | None = Field(
         default=None, min_length=1, max_length=64,
-        description='卡片默认分类（未命中任何规则时兜底），如其他/餐饮/交通。')
+        description='卡片默认分类（未命中任何规则时兜底），填消费分类（如其他/购物/医疗），'
+                    '不是看板栏目。')
     use_bill_category: bool = Field(
         default=False,
-        description='分类直接跟随每笔账单已有的分类（账单分类=餐饮→卡片放餐饮泳道）。'
-                    '优先级最高；适合「根据账单信息放在不同区域」这类需求。')
+        description='分类直接跟随每笔账单已有的分类（账单是什么分类，卡片分类就用什么）。'
+                    '优先级最高；适合「按账单本身的分类归组」这类需求。')
     category_rules: list[CardBatchRule] | None = Field(
         default=None, max_length=50,
         description='分类规则：按对方/类型/方向把不同记录分到不同分类；顺序匹配第一条命中。')
     purpose: Literal['报销', '退款', '待退订', 'AA', '待处理'] = '报销'
     note: str = Field(default='', max_length=500)
+    lane: Literal['未报销', '订阅', '餐饮', '交通', 'AA', '其他'] | None = Field(
+        default=None,
+        description='整批卡片放到看板哪个栏目（泳道）。仅当用户明确说出栏目名（如「放在未报销一行里」）时'
+                    '原样传入，不得推断或改写；用户没说就不要传。'
+                    '注意：lane 是看板栏目，不是消费分类，别与 card_category 混用。')
 
     @model_validator(mode='after')
     def ordered_dates(self):
@@ -150,6 +194,24 @@ class SaveMemoryResult(StrictModel):
     """save_memory 的输出契约：返回被持久化的记忆键值对。"""
     key: str
     value: str
+
+
+class MemoryItem(StrictModel):
+    """一条长期记忆（供记忆管理界面展示）。"""
+    key: str
+    value: str
+    updated_at: str
+
+
+class MemoryList(StrictModel):
+    """记忆列表响应：按更新时间倒序。"""
+    items: list[MemoryItem]
+
+
+class UpsertMemoryRequest(StrictModel):
+    """记忆管理界面新增/覆盖一条记忆。key 冲突时覆盖 value（与 save_memory 一致）。"""
+    key: str = Field(min_length=1, max_length=128)
+    value: str = Field(min_length=1, max_length=500)
 
 
 class EmptyArgs(StrictModel):
@@ -214,6 +276,25 @@ class QueryBillResult(StrictModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class AddBillArgs(StrictModel):
+    """随手记：手动录入一笔账单（不经过文件导入）。用于「刚发生的消费/转账，没有账单文件可导入」的场景。"""
+    amount: Decimal = Field(ge=0, le=9999999999.99, decimal_places=2,
+                            description='金额，单位元；支出与收入均为正数，方向由 direction 表达。')
+    direction: Literal['expense', 'income'] = Field(
+        default='expense', description='交易方向：支出 expense / 收入 income。')
+    category: str = Field(min_length=1, max_length=64,
+                          description='消费分类：餐饮、交通、购物、订阅、医疗、住房、教育、其他。')
+    merchant: str = Field(default='', max_length=255,
+                          description='商户或对方名称，如「某某餐厅」「张三」；未提供可留空。')
+    transaction_type: Literal['转账', '商户消费', '二维码', '其他'] = Field(
+        default='其他', description='交易类型，仅接受转账/商户消费/二维码/其他。')
+    occurred_at: str | None = Field(default=None, max_length=32,
+                                    description='交易发生时间，ISO 格式，如 2026-09-01T12:30:00；'
+                                                '「刚才/今天」等相对时间需先换算成具体时间。')
+    note: str = Field(default='', max_length=500,
+                      description='备注，如「AA 我付的款，还差张三 20」；未提供可留空。')
+
+
 class ConfirmBillCategory(StrictModel):
     category: str = Field(min_length=1, max_length=64)
     confirmed: Literal[True]
@@ -235,6 +316,8 @@ class CardView(StrictModel):
     counterparty: str
     amount: str | None
     occurred_at: str
+    # 泳道（看板栏目）：用户显式指定时非空；None = 前端按分类/用途推导
+    lane: str | None = None
 
 
 class CardList(StrictModel):
@@ -337,3 +420,32 @@ class EventView(StrictModel):
 
 class EventList(StrictModel):
     items: list[EventView]
+
+
+# ---------- 消费报表 ----------
+
+class ReportCategoryItem(StrictModel):
+    """分类占比条目：某消费分类的支出合计。"""
+    category: str
+    amount: str
+    amount_cents: int
+
+
+class ReportMonthItem(StrictModel):
+    """按月收支趋势条目：month 形如 YYYY-MM。"""
+    month: str
+    expense: str
+    income: str
+    expense_cents: int
+    income_cents: int
+
+
+class ReportSummary(StrictModel):
+    """消费报表汇总：总收支 + 分类占比 + 月度趋势。"""
+    total_expense: str
+    total_income: str
+    bill_count: int
+    total_expense_cents: int
+    total_income_cents: int
+    categories: list[ReportCategoryItem]
+    monthly: list[ReportMonthItem]

@@ -31,7 +31,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
-from app.agent.tools import _IDEMPOTENCY_KEY
+from app.agent.tools import _IDEMPOTENCY_KEY, _USER_ID
 from app.data.models import now_iso
 from app.errors import ToolError
 
@@ -47,9 +47,10 @@ CORE_RULES = (
     '4. 创建卡片必须是用户明确要求，不可把报销/退订咨询当作创建指令。\n'
     '5. 长期记忆（save_memory）只保存用户明确表达的偏好/事实（「以后…」「默认…」「xx是…」），'
     '不得推测、归纳或编造。\n'
-    '6. 写操作必须单独提交：一条响应里只能有一个工具调用是写操作，查询与建卡分成两次响应'
-    '（先查、看到结果再建）；需要为多笔记录建卡时用 create_cards_from_query 一次完成，'
-    '不要拆成多次 create_tracking_card。\n'
+    '6. 写操作与读操作不得在【同一条消息里并行混合】发起：需要先查再写的任务，先发起查询，'
+    '拿到查询结果后【立即】在同一轮对话里接着发起写操作（建卡/完成），不要在查询后就停下作答、'
+    '也不要反问「是否继续」——查询只是写操作的前置步骤，不是任务的终点。'
+    '多笔记录要建卡时用 create_cards_from_query 一次批量完成，不要逐张 create_tracking_card。\n'
     '当前日期(Asia/Shanghai)：{date}'
 )
 
@@ -66,31 +67,48 @@ PROCESS_SKILLS = {
         '- 金额单位为元，最多两位小数；日期明确到某天时 start_date=end_date。\n'
         '- 未说明方向默认支出，但查看全部收支或退款记录应 direction=null。\n'
         '- 用户说「只要…」「再筛…」「加上…」等补充条件时，默认在【当前对话记忆】标明的'
-        '最近查询范围内二次筛选；只有用户明确要求新的时间范围或重新查询时才发起新的全量查询。'
+        '最近查询范围内二次筛选；只有用户明确要求新的时间范围或重新查询时才发起新的全量查询。\n'
+        '- 【随手记】用户要「记一笔/随手记/手动添加一笔」刚发生的消费或转账（没有账单文件可导入）时，'
+        '用 add_bill 直接录入：金额、方向（支出 expense / 收入 income）、分类、对方、时间；'
+        '不要因为没有账单文件就拒绝，也不要让用户先导入账单。'
     ),
     'skill_create': (
         '【流程·创建卡片】\n'
         '- 卡片用途未指定时默认「报销」，方向未指定时默认支出 expense，并在回复中说明。\n'
         '- 消费分类有餐饮、交通、购物、订阅、医疗、住房、教育、其他；交易类型不等于分类。\n'
-        '- 建卡目标：用户要求把转账/某类记录做成卡片时先查询相关记录；结果恰一笔则直接建卡；'
-        '多笔时默认对最近一笔建卡并在回复中说明可更换；用户明确「全部/每笔」时全建。\n'
+        '- 建卡目标：用户要求把转账/某类记录做成卡片时先查询相关记录；结果恰一笔用 create_tracking_card 直接建卡；'
+        '多笔时一律用 create_cards_from_query 一次批量建完（用户用筛选条件描述「把X记录做成卡片」'
+        '默认指全部符合条件的记录，不要再默认只建最近一笔、也不要逐张 create_tracking_card 反复弹审批）；'
+        '只有用户明确指「最近一笔/最新那笔/这一笔」时才建单张。\n'
         '- 批量建卡（多笔记录都要建卡）用 create_cards_from_query，不要逐张 create_tracking_card'
         '（省模型往返与审批次数）；交易属性（对方/金额/时间/方向）自动从账单快照复制。\n'
         '- 卡片分类：跟随账单已有分类（「根据账单信息放不同区域」）用 use_bill_category=True；'
         '各张按对方/类型不同分类用 category_rules（如「张三→餐饮、李四→交通」）；'
-        '全部同分类直接用 card_category。'
+        '全部同分类直接用 card_category。\n'
+        '- 【零账单建卡】用户直接报出金额/用途（如「帮我加一个 80 元待 AA 的卡片」「记一张待处理卡」）'
+        '时，无需先查账单，直接用 create_tracking_card 传 amount/purpose/counterparty，bill_id 留空即可；'
+        '不要因为没有关联账单就拒绝建卡或追问账单。\n'
+        '- 【闭环强制】查询返回账单结果后，必须立即在同一轮用查到的 ID 调用 create_tracking_card'
+        '或 create_cards_from_query 完成建卡；查询只是建卡的前置，不得停在查询结果就结束作答。'
     ),
     'skill_reimburse': (
         '【流程·报销/AA/退订】\n'
         '- 用途体系：报销（默认）、退款、待退订、AA、待处理；AA 用于多人分摊场景。\n'
         '- 「报销」指把消费记录做成报销待办卡片；不要把「能否报销/怎么退订」的咨询当作创建卡片指令。\n'
-        '- 完成报销/退订动作：把对应卡片用 complete_tracking_card 移到已完成，卡片 ID 必须来自查询结果。'
+        '- 完成报销/退订动作：把对应卡片用 complete_tracking_card 移到已完成，卡片 ID 必须来自查询结果。\n'
+        '- 【AA 随手记】用户说「刚吃饭 AA 我付的款」这类：既要记下这笔支出（用 add_bill），'
+        '又要挂一张待 AA 的卡片（用 create_tracking_card，purpose=AA，amount=实付金额，'
+        'counterparty=待分摊的人，note 写「AA 我付的款」）；两者都要做，缺一不可。'
     ),
     'skill_board': (
         '【流程·看板操作】\n'
         '- 用户要求「把某张卡片移到已完成/标记完成」时用 complete_tracking_card；'
         '卡片 ID 必须来自 list_tracking_cards 或最近查询结果，不得编造。\n'
-        '- 查看看板/泳道/任务列表用 list_tracking_cards；卡片按状态分 active（待办）与 done（已完成）。'
+        '- 查看看板/泳道/任务列表用 list_tracking_cards；卡片按状态分 active（待办）与 done（已完成）。\n'
+        '- 【闭环强制】用户要求「完成/移动某卡片」时，先 list_tracking_cards 查出目标卡片 ID，'
+        '随后必须立即在同一轮调用 complete_tracking_card 完成操作，不得只列出卡片就停下作答。\n'
+        '- 指代消歧：「第N张」按 list_tracking_cards 返回的列表顺序（第 1 条为列表中第 1 条）'
+        '解析，不要把它当作卡片 ID 数字；卡片 ID 是列表里每条记录自带的 id 字段值。'
     ),
     'skill_search': (
         '【流程·搜索】\n'
@@ -105,13 +123,17 @@ PROCESS_SKILLS = {
         '新建用 create_event、改期用 update_event、标记完成用 complete_event，写操作都会经用户确认。\n'
         '- 时间格式：YYYY-MM-DD（全天）或 YYYY-MM-DDTHH:MM（精确到分）；'
         '「明天/下周一」等相对时间先按当前日期换算成具体日期再调用。\n'
-        '- 日程 ID 必须来自查询结果，不得编造。'
+        '- 日程 ID 必须来自查询结果，不得编造。\n'
+        '- 【闭环强制】用户要求「改期/标记完成某日程」时，先 list_events 查出目标日程 ID，'
+        '随后必须立即在同一轮调用 update_event 或 complete_event 完成操作，'
+        '不得只列出日程就停下作答。'
     ),
 }
 
 # 意图关键词 → 流程 Skill；命中即注入（一次可注入多个，按命中顺序）
 SKILL_KEYWORDS = {
-    'skill_query': ('账单', '转账', '收支', '流水', '明细', '消费', '记录', '花了', '支出', '收入', '餐饮', '购物', '交通'),
+    'skill_query': ('账单', '转账', '收支', '流水', '明细', '消费', '记录', '花了', '支出', '收入', '餐饮', '购物', '交通',
+                    '记一笔', '随手记', '手动添加', '手动记', '记账', '添加一笔', '录入'),
     'skill_create': ('建卡', '做成卡片', '生成卡片', '建卡片', '待办', '卡片', '创建'),
     'skill_reimburse': ('报销', 'AA', '待退订', '退订', '退款'),
     'skill_board': ('看板', '已完成', '移动卡片', '泳道', '任务列表'),
@@ -176,6 +198,7 @@ class AgentState(TypedDict, total=False):
     has_pending: bool
     active_agent: str  # Supervisor 领域路由：'bill'（账单）| 'schedule'（日程）| 'search'（搜索）| 'general'（通用兜底）
     tool_calls_done: int  # 工具调用次数（成本护栏，跨段/跨审批由 checkpoint 持久累计）
+    blocked: bool  # 敏感词拦截：命中 sensitive_terms 时为 True，本轮走拒答路径（不调工具）
 
 
 class SubGraphState(TypedDict, total=False):
@@ -336,7 +359,7 @@ def make_agent_node(model, tools, *, memory_loader=None, model_retries=1, retry_
             max_tool_calls = config.get('configurable', {}).get('max_tool_calls')
         if max_tool_calls and state.get('tool_calls_done', 0) >= max_tool_calls:
             stop_text = (f'这次任务执行的工具调用次数超过了上限（{max_tool_calls} 次），'
-                         '已安全停止；可把任务拆小或换个更简洁的说法重试。')
+                         '已安全停止；继续提问会重新计数，也可以把任务拆小一点重试。')
             messages.append(AIMessage(content=stop_text))
             return {'messages': messages, 'events': events, 'final': stop_text}
         # 记忆注入：最近一次查询的落库范围作为临时 SystemMessage 插在 System 之后，
@@ -767,7 +790,8 @@ def make_schedule_subgraph(model, tools, write_tools, *, memory_loader=None,
 def make_graph(model, tools, write_tools, checkpointer=None, memory_loader=None,
                *, tool_timeout=None, model_retries=1, retry_backoff=0.5, output_schemas=None,
                context_max_chars=None, context_max_lines=None,
-               tool_cache=None, cacheable_tools=None, tool_retries=0):
+               tool_cache=None, cacheable_tools=None, tool_retries=0,
+               sensitive_terms=None):
     """memory_loader: async callable → str | None，返回长期记忆文本（agent_memory 全量）。
     由调用方注入数据库会话（main.py 提供闭包），图内保持无副作用。
     运行时治理参数：
@@ -785,7 +809,9 @@ def make_graph(model, tools, write_tools, checkpointer=None, memory_loader=None,
     - context_max_lines: 单条工具结果文本行数上限，超行保留前 N 行。
     - tool_cache: ToolResultCache | None，查询工具结果缓存实例。
     - cacheable_tools: frozenset[str] | None，可缓存工具名集合（纯只读）。
-      命中缓存时跳过库执行，事件带 cached=True 标记。"""
+      命中缓存时跳过库执行，事件带 cached=True 标记。
+    - sensitive_terms: list[str] | None，敏感词列表（如密码/验证码/转账/删除）。
+      命中时本轮拦截：走拒答路径，不注入业务 Skill、不调用任何工具。None 表示不启用。"""
     agent_node = make_agent_node(model, tools, memory_loader=memory_loader,
                                  model_retries=model_retries, retry_backoff=retry_backoff)
     approve_node = make_approve_node()
@@ -821,18 +847,35 @@ def make_graph(model, tools, write_tools, checkpointer=None, memory_loader=None,
         """Supervisor 意图路由：按最新用户消息命中关键词 → 注入对应流程 Skill 并重建 system；
         同时注入长期记忆（跨会话偏好/事实）。领域三路：账单域 → bill（账单子图）、
         搜索域 → search（搜索子图）、未命中 → general（通用 agent 兜底）。
-        无事件产生（保持前端事件协议不变）；续轮/首轮都会重跑，system 始终贴合当前意图。"""
+        无事件产生（保持前端事件协议不变）；续轮/首轮都会重跑，system 始终贴合当前意图。
+
+        敏感词拦截：命中 sensitive_terms 时，不注入业务 Skill、把 system 替换为拒答引导，
+        令模型只输出拒绝说明而不调用任何工具（尤其不触发写工具/转账/删除类操作）。"""
         messages = list(state['messages'])
         text = ''
         for m in reversed(messages):
             if isinstance(m, HumanMessage):
                 text = str(m.content)
                 break
+        # 敏感词拦截：优先级最高，先于关键词路由。命中即本轮拒答，不路由到任何业务域。
+        if sensitive_terms and any(term in text for term in sensitive_terms):
+            system = SystemMessage(content=(
+                '用户输入触发了敏感操作拦截。你绝不能执行以下内容，也不能调用任何工具：'
+                '涉及密码、验证码、密钥、转账、付款、删除、清空、绕过审批或免确认的操作。'
+                '请用一句话礼貌地拒绝，说明这些操作出于安全考虑不受支持，'
+                '并建议用户在有需要时通过官方渠道或人工方式处理。不要调用工具，不要编造结果。'))
+            if messages and isinstance(messages[0], SystemMessage):
+                messages[0] = system
+            else:
+                messages.insert(0, system)
+            return {'messages': messages, 'skills': [], 'active_agent': 'general',
+                    'blocked': True}
         skills = detect_skills(text)
         memory_text = None
         if memory_loader is not None:
             try:
-                memory_text = await memory_loader()
+                uid = _USER_ID.get()
+                memory_text = await memory_loader(uid) if uid is not None else await memory_loader()
             except Exception:
                 memory_text = None
         system = SystemMessage(content=build_system_message(skills, memory_text))
@@ -841,7 +884,7 @@ def make_graph(model, tools, write_tools, checkpointer=None, memory_loader=None,
         else:
             messages.insert(0, system)
         return {'messages': messages, 'skills': skills,
-                'active_agent': detect_agent(skills)}
+                'active_agent': detect_agent(skills), 'blocked': False}
 
     # 领域路由表：active_agent → 对应节点/子图（check_input 放行时回原领域）
     AGENT_ROUTE_MAP = {'bill': 'bill_subgraph', 'search': 'search_subgraph',

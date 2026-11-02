@@ -3,7 +3,8 @@ from sqlalchemy import select
 
 from app.data.models import TrackingCard
 from app.data.views import card_view as full_card_view
-from app.schemas import CardList, CardView
+from app.schemas import CardList, CardView, CreateTrackingCardArgs
+from app.services.card_service import create_card
 
 router = APIRouter(prefix='/api/cards', tags=['cards'])
 
@@ -24,9 +25,19 @@ async def list_cards(request: Request,
         filters.append(TrackingCard.status == status)
     async with request.app.state.db.sessions() as session:
         cards = list(await session.scalars(
-            select(TrackingCard).where(*filters)
+            select(TrackingCard).where(TrackingCard.user_id == request.state.user_id, *filters)
             .order_by(TrackingCard.id.desc()).offset(offset).limit(limit)))
     return CardList(items=[CardView(**full_card_view(c)) for c in cards])
+
+
+@router.post('', response_model=CardView)
+async def create_new_card(payload: CreateTrackingCardArgs, request: Request):
+    """看板直连新建跟踪卡（确定性录入，不走 Agent/审批）。
+
+    不关联账单（bill_id 留空）时即纯手动卡：用途/分类/金额/对方/备注由用户显式填写；
+    调用 create_card 服务层复用同一套快照与幂等（invocation_id 自动生成）。
+    """
+    return await create_card(request.app.state.db, request.state.user_id, payload)
 
 
 @router.post('/{card_id}/complete')
@@ -37,7 +48,7 @@ async def complete_card(card_id: int, request: Request):
     async with request.app.state.db.sessions() as session:
         async with session.begin():
             card = await session.get(TrackingCard, card_id)
-            if card is None:
+            if card is None or card.user_id != request.state.user_id:
                 raise HTTPException(404, '卡片不存在')
             if card.status != 'done':
                 card.status = 'done'
@@ -53,7 +64,7 @@ async def delete_card(card_id: int, request: Request):
     async with request.app.state.db.sessions() as session:
         async with session.begin():
             card = await session.get(TrackingCard, card_id)
-            if card is None:
+            if card is None or card.user_id != request.state.user_id:
                 raise HTTPException(404, '卡片不存在')
             if card.status != 'done':
                 raise HTTPException(400, '仅可删除「已完成」状态的卡片')
