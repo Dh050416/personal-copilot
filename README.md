@@ -1,5 +1,6 @@
 # PersonalCopilot
 
+[![CI](https://github.com/Dh050416/personal-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Dh050416/personal-copilot/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
 这是一个用真实账单场景学习 **Agent 工程问题**的实验框架。业务功能只做最小闭环，重点观察：
