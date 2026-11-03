@@ -74,3 +74,37 @@ jobs:
             exit 1
           fi
           echo "OK：没有数据库或 .env 文件被追踪"
+
+  # Agent 评测集真实跑批（可选）：需要仓库 Secret 提供模型 key 才执行。
+  # 配了 secret → 每次 push 用真实模型跑 43 条用例，输出指标报告；
+  # 没配 → 自动跳过（fork 者不红）。指标不设硬门槛（temperature=0 仍非确定性），
+  # 但通过率/越权数会打印在日志里，供改 prompt 后人工对比基线。
+  evals:
+    runs-on: ubuntu-latest
+    # 三个 Secret（模型 key / base_url / 名称）缺一不可才跑；缺任意一个则跳过
+    if: ${{ secrets.EVAL_MODEL_API_KEY != '' && secrets.EVAL_MODEL_BASE_URL != '' }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run eval suite against real model
+        env:
+          MODEL_API_KEY: ${{ secrets.EVAL_MODEL_API_KEY }}
+          MODEL_BASE_URL: ${{ secrets.EVAL_MODEL_BASE_URL }}
+          MODEL_NAME: ${{ secrets.EVAL_MODEL_NAME }}
+          ALLOW_CLOUD_MODEL: "true"
+        run: |
+          python -m evals --limit 43 --out evals/results/ci.md --json-out evals/results/ci.json

@@ -27,3 +27,6 @@ test-results/
 *.log.*
 .uvicorn-*.txt
 *.err.txt
+
+# ----- 评测报告产物（含真实模型跑分，不入库）-----
+backend/evals/results/
