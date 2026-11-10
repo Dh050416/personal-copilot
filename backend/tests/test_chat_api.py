@@ -10,18 +10,14 @@ from pydantic import PrivateAttr
 
 from app.agent.graph import make_graph
 from app.agent.tools import WRITE_TOOLS, build_tools
-from app.data.db import Database
 from app.data.models import Bill
 from app.main import app
 from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
-async def ctx(tmp_path):
-    db = Database(tmp_path / 'api.db')
-    await db.initialize()
+async def ctx(db):
     yield {'db': db, 'tools': build_tools(db)}
-    await db.close()
 
 
 class FakeChatModel(GenericFakeChatModel):

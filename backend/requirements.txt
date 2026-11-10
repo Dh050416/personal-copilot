@@ -12,11 +12,11 @@ asyncpg>=0.29,<1
 pgvector>=0.3,<1
 # 数据库迁移工具（表结构版本管理，替代手写 ALTER TABLE）
 alembic>=1.14,<2
-# 测试/eval 隔离库仍用 SQLite
-aiosqlite>=0.20,<1
 openpyxl>=3.1,<4
 langgraph>=1.0,<2
-langgraph-checkpoint-sqlite>=3.0,<4
+# checkpoint 存 PostgreSQL（psycopg 同步方言；binary 提供预编译 libpq）
+langgraph-checkpoint-postgres>=3.0,<4
+psycopg[binary]>=3.1,<4
 openai>=1.60,<3
 python-multipart>=0.0.18,<1
 langfuse>=3.0,<4

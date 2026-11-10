@@ -10,7 +10,6 @@ from sqlalchemy import select
 from app.agent.graph import build_system_message, initial_input, make_graph
 from app.agent.tools import WRITE_TOOLS, build_tools
 from app.api.chat import _trim_history
-from app.data.db import Database
 from app.data.models import AgentMemory
 
 
@@ -51,11 +50,8 @@ class RecordingChatModel(GenericFakeChatModel):
 
 
 @pytest.fixture
-async def ctx(tmp_path):
-    db = Database(tmp_path / 'memory.db')
-    await db.initialize()
+async def ctx(db):
     yield {'db': db, 'tools': build_tools(db)}
-    await db.close()
 
 
 async def load_memories(db):

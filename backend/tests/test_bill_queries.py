@@ -2,18 +2,14 @@
 import pytest
 
 from app.agent.tools import build_tools
-from app.data.db import Database
 from app.data.models import Bill
 from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
-async def tools(tmp_path):
-    db = Database(tmp_path / 'queries.db')
-    await db.initialize()
+async def tools(db):
     tool_map = {t.name: t for t in build_tools(db)}
     yield {'db': db, 'tools': tool_map}
-    await db.close()
 
 
 async def seed_query_bills(db):

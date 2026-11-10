@@ -4,15 +4,12 @@
 评估要测的是「系统」的行为，不是「模型裸调」的行为。审批、拦截、上下文卫生这些护栏
 一旦被绕过，指标里必须能看出来。
 
-隔离策略：每条用例一个临时 SQLite 库 + 一个独立 thread_id，
-用完即删。用例之间不会互相污染，也不会碰到真实账单库。
+隔离策略：每条用例复用测试专用 PostgreSQL 库（drop_all/create_all 重建），
+配一个独立 thread_id，用例之间不会互相污染，也不会碰到真实账单库。
 """
 import asyncio
-import shutil
-import tempfile
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -23,8 +20,9 @@ from sqlalchemy import select
 
 from app.agent.graph import initial_input, make_graph
 from app.agent.tools import _USER_ID, OUTPUT_SCHEMAS, WRITE_TOOLS, build_tools
+from app.config import Settings
 from app.data.db import Database
-from app.data.models import AgentMemory, Bill, ScheduleEvent, TrackingCard
+from app.data.models import AgentMemory, Base, Bill, ScheduleEvent, TrackingCard
 from evals.dataset import SEEDS, Case
 
 # 单条用例最多自动批准几次写操作；超限即拒绝，防止模型自激循环把评估跑成无底洞
@@ -152,11 +150,12 @@ def _tokens(messages: list[Any]) -> tuple[int | None, int | None]:
 async def run_case(case: Case, model, *, timeout: float = 120.0) -> CaseRun:
     """跑一条用例。异常不抛出，转成 CaseRun.error，让整批评估不会因为一题崩掉而中断。"""
     run = CaseRun(case_id=case.id)
-    tmp = Path(tempfile.mkdtemp(prefix=f'eval-{case.id}-'))
-    db = Database(tmp / 'eval.db')
+    db = Database(Settings().test_database_url)
     started = time.perf_counter()
     try:
-        await db.initialize()
+        async with db.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
         await _seed(db, case.seeds)
         graph = make_graph(
             model, build_tools(db), WRITE_TOOLS, MemorySaver(),
@@ -193,5 +192,4 @@ async def run_case(case: Case, model, *, timeout: float = 120.0) -> CaseRun:
     finally:
         run.latency_ms = (time.perf_counter() - started) * 1000
         await db.close()
-        shutil.rmtree(tmp, ignore_errors=True)
     return run

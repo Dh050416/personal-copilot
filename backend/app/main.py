@@ -1,9 +1,18 @@
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+# Windows 下 psycopg（checkpoint-postgres 的驱动）异步模式不支持 ProactorEventLoop，
+# 必须用 SelectorEventLoop。这里在导入期切 policy，覆盖脚本/测试等非 uvicorn 入口；
+# uvicorn 启动（Windows 本地开发）需用 run.py（monkeypatch 其硬编码的 Proactor），
+# 生产 Docker/Linux 默认即 SelectorEventLoop，无需处理。
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import select
 
 from app.agent.graph import ToolResultCache, make_graph
@@ -32,8 +41,9 @@ async def lifespan(app: FastAPI):
     await db.initialize()
     # 用户令牌签名密钥：环境变量或 data/auth_secret（容器重启后令牌仍有效）
     auth_secret = load_or_create_secret(settings.data_dir)
-    checkpoint_cm = AsyncSqliteSaver.from_conn_string(str(settings.data_dir / 'checkpoints.db'))
+    checkpoint_cm = AsyncPostgresSaver.from_conn_string(settings.checkpoint_url)
     checkpointer = await checkpoint_cm.__aenter__()
+    await checkpointer.setup()
     model = ChatOpenAI(
         api_key=settings.model_api_key,
         base_url=settings.model_base_url,

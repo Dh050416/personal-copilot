@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # 注意：Windows 本机 localhost 优先解析到 IPv6 ::1，而 Docker 只映射 IPv4 0.0.0.0，
     # 写 localhost 会连不上（同 Langfuse 的坑），必须写 127.0.0.1。
     database_url: str = 'postgresql+asyncpg://postgres:123456@127.0.0.1:5432/PersonManager'
+    # LangGraph checkpoint 连接串。checkpoint-postgres 用 psycopg（同步方言），
+    # 与业务库的 asyncpg 方言不同，故单独一个 URL。生产覆盖为容器内网地址。
+    checkpoint_url: str = 'postgresql://postgres:123456@127.0.0.1:5432/PersonManager'
+    # 测试专用库：pytest fixture 用它建表/清表，避免污染开发库。仅测试环境使用。
+    test_database_url: str = 'postgresql+asyncpg://postgres:123456@127.0.0.1:5432/PersonManager_test'
     model_provider: Literal['openai_compatible'] = 'openai_compatible'
     model_api_key: str = 'local'
     model_base_url: str = 'http://127.0.0.1:11434/v1'

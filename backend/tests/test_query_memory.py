@@ -7,7 +7,6 @@ from pydantic import PrivateAttr
 
 from app.agent.graph import initial_input, make_graph
 from app.agent.tools import WRITE_TOOLS, build_tools
-from app.data.db import Database
 from app.data.models import Bill
 from tests.conftest import TEST_USER_ID
 
@@ -55,11 +54,8 @@ def tool_call_message(name, args, call_id='call-1'):
 
 
 @pytest.fixture
-async def ctx(tmp_path):
-    db = Database(tmp_path / 'memory.db')
-    await db.initialize()
+async def ctx(db):
     yield {'db': db, 'tools': build_tools(db)}
-    await db.close()
 
 
 async def seed_bills(db):

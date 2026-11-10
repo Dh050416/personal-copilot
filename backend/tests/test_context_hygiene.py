@@ -17,17 +17,13 @@ from langgraph.types import Command
 
 from app.agent.graph import ToolResultCache, initial_input, make_graph
 from app.agent.tools import CACHEABLE_TOOLS, WRITE_TOOLS, build_tools
-from app.data.db import Database
 from app.schemas import EmptyArgs
 from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
-async def ctx(tmp_path):
-    db = Database(tmp_path / 'hygiene.db')
-    await db.initialize()
+async def ctx(db):
     yield {'db': db, 'tools': build_tools(db)}
-    await db.close()
 
 
 class FakeChatModel(GenericFakeChatModel):

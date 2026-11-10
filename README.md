@@ -100,7 +100,11 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env               # 按需修改模型配置
-uvicorn app.main:app --reload
+# 首次运行需先建表（PostgreSQL + Alembic）：
+alembic upgrade head
+# 启动（Windows 本地开发用 run.py，它会规避 psycopg 的 ProactorEventLoop 限制；
+#       生产 Docker/Linux 直接 uvicorn app.main:app 即可）
+python run.py
 
 # 前端（另一个终端）
 cd frontend

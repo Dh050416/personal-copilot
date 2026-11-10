@@ -4,20 +4,11 @@ import pytest
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.data.db import Database
 from app.data.models import Bill
 from app.services.bill_service import classify_existing, import_rows
 from app.services.classification import BillClassifier, ClassificationItem
 from app.services.importer import parse_rows
 from tests.conftest import TEST_USER_ID
-
-
-@pytest.fixture
-async def db(tmp_path):
-    db = Database(tmp_path / 'imports.db')
-    await db.initialize()
-    yield db
-    await db.close()
 
 
 def import_fixture():

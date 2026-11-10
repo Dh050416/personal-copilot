@@ -16,8 +16,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 复制后端代码
+# 复制后端代码与迁移框架
 COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini .
 
 # 数据目录：生产环境用环境变量 DATA_DIR 挂载持久化卷
 ENV DATA_DIR=/app/data
@@ -26,6 +28,7 @@ RUN mkdir -p /app/data
 # 端口
 EXPOSE 8000
 
-# tini 作为 PID 1，正确转发信号、回收子进程
+# tini 作为 PID 1，正确转发信号、回收子进程；
+# 启动前先跑 Alembic 迁移建表，再起 uvicorn（Linux 默认 SelectorEventLoop，checkpoint-postgres 兼容）
 ENTRYPOINT ["tini", "--"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]

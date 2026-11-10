@@ -4,7 +4,6 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.agent.tools import TOOL_PERMISSIONS, WRITE_TOOLS, build_tools
-from app.data.db import Database
 from app.data.models import Bill, TrackingCard
 from app.errors import ToolError
 from app.schemas import CardList, CardView, QueryBillResult
@@ -12,11 +11,8 @@ from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
-async def ctx(tmp_path):
-    db = Database(tmp_path / 'tools.db')
-    await db.initialize()
+async def ctx(db):
     yield {'db': db, 'tools': {t.name: t for t in build_tools(db)}}
-    await db.close()
 
 
 async def invoke(tool, args):

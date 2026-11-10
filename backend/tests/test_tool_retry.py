@@ -17,17 +17,13 @@ from sqlalchemy import func, select
 
 from app.agent.graph import initial_input, make_graph
 from app.agent.tools import WRITE_TOOLS, build_tools
-from app.data.db import Database
 from app.data.models import TrackingCard
 from app.errors import ToolError
 
 
 @pytest.fixture
-async def ctx(tmp_path):
-    db = Database(tmp_path / 'retry.db')
-    await db.initialize()
+async def ctx(db):
     yield {'db': db, 'tools': build_tools(db)}
-    await db.close()
 
 
 class FakeChatModel(GenericFakeChatModel):

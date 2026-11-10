@@ -7,18 +7,14 @@ from sqlalchemy import select
 
 from app.agent.graph import build_system_message, detect_skills, initial_input, make_graph
 from app.agent.tools import WRITE_TOOLS, build_tools
-from app.data.db import Database
 from app.data.models import Bill, TrackingCard
 from tests.conftest import TEST_USER_ID
 
 
 @pytest.fixture
-async def ctx(tmp_path):
-    db = Database(tmp_path / 'graph.db')
-    await db.initialize()
+async def ctx(db):
     tools = build_tools(db)
     yield {'db': db, 'tools': tools}
-    await db.close()
 
 
 async def seed_bills(db):
