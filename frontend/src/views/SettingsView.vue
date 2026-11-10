@@ -230,7 +230,7 @@ onMounted(() => {
   color: #fff;
 }
 .btn-primary:hover:not(:disabled) {
-  background: #1e40af;
+  opacity: 0.88;
 }
 .btn-mini {
   padding: 3px 10px;

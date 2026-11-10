@@ -464,7 +464,7 @@ watch([year, month], loadMonth)
   color: #fff;
 }
 .btn-primary:hover:not(:disabled) {
-  background: #1e40af;
+  opacity: 0.88;
 }
 .btn-mini {
   padding: 3px 10px;
@@ -491,7 +491,7 @@ watch([year, month], loadMonth)
   color: #fff;
 }
 .btn-approve:hover:not(:disabled) {
-  background: #1e40af;
+  opacity: 0.88;
 }
 .icon-btn {
   padding: 7px 12px;

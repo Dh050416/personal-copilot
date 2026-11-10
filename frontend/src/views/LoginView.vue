@@ -59,7 +59,7 @@ async function submit(): Promise<void> {
   <div class="auth-page">
     <div class="auth-card">
       <div class="auth-brand">
-        <span class="auth-mark" aria-hidden="true"></span>
+        <span class="auth-mark" aria-hidden="true">A</span>
         <h1 class="auth-title">生活管家</h1>
         <p class="auth-sub">每个账号都是一位专属的账单管家，数据彼此隔离</p>
       </div>
@@ -158,11 +158,16 @@ async function submit(): Promise<void> {
 }
 
 .auth-mark {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 44px;
   height: 44px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, var(--header-start), var(--header-end));
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
   margin-bottom: 12px;
 }
 
