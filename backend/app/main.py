@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     settings = Settings()
     init_langfuse(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    db = Database(settings.data_dir / 'personal_copilot.db')
+    db = Database(settings.database_url)
     await db.initialize()
     # 用户令牌签名密钥：环境变量或 data/auth_secret（容器重启后令牌仍有效）
     auth_secret = load_or_create_secret(settings.data_dir)

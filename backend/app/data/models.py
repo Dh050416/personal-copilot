@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -30,8 +30,8 @@ class Bill(Base):
     tx_time: Mapped[str] = mapped_column(String(32), index=True)
     merchant: Mapped[str] = mapped_column(String(255))
     product: Mapped[str] = mapped_column(String(500), default='')
-    # SQLite NUMERIC may use binary floats; integer cents avoid that.
-    amount_cents: Mapped[int] = mapped_column(Integer)
+    # 金额以「分」存整数，避免浮点误差；BigInteger 兼容 PG 与 SQLite，留足扩展空间。
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
     direction: Mapped[str] = mapped_column(String(16))
     transaction_type: Mapped[str] = mapped_column(String(64), default='未知')
     payment_method: Mapped[str] = mapped_column(String(64), default='未知')
@@ -68,7 +68,7 @@ class TrackingCard(Base):
     direction: Mapped[str] = mapped_column(String(16), default='expense')
     transaction_type: Mapped[str] = mapped_column(String(64), default='其他')
     counterparty: Mapped[str] = mapped_column(String(255), default='')
-    amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    amount_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     occurred_at: Mapped[str] = mapped_column(String(32), default='')
     status: Mapped[str] = mapped_column(default='active')
     note: Mapped[str] = mapped_column(Text, default='')

@@ -11,6 +11,11 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BACKEND_DIR / '.env', extra='ignore')
     data_dir: Path = BACKEND_DIR / 'data'
+    # 业务数据库连接串（SQLAlchemy 方言）。切 PostgreSQL 后由 DATABASE_URL 决定，
+    # 默认指向本地 Docker 的 pgvector/pg16（开发环境）；生产在 .env 里覆盖为容器内网地址。
+    # 注意：Windows 本机 localhost 优先解析到 IPv6 ::1，而 Docker 只映射 IPv4 0.0.0.0，
+    # 写 localhost 会连不上（同 Langfuse 的坑），必须写 127.0.0.1。
+    database_url: str = 'postgresql+asyncpg://postgres:123456@127.0.0.1:5432/PersonManager'
     model_provider: Literal['openai_compatible'] = 'openai_compatible'
     model_api_key: str = 'local'
     model_base_url: str = 'http://127.0.0.1:11434/v1'
