@@ -51,6 +51,12 @@ class Settings(BaseSettings):
                                    description='单条工具结果文本字符上限，超长截断并提示分页。')
     context_max_lines: int = Field(default=40, ge=5, le=200,
                                    description='单条工具结果文本行数上限，超行保留前 N 行。')
+    # 对话历史滑动窗口：续轮时保留最近 N 条原始消息，更早的普通文本消息压入递进摘要。
+    # 0 或负数 = 不启用摘要（退化为旧的全量截断）。
+    history_window_size: int = Field(default=10, ge=0, le=100,
+                                     description='滑动窗口保留的最近消息条数；超出的文本消息增量合并进摘要。')
+    summary_max_chars: int = Field(default=4000, ge=500, le=20000,
+                                   description='单条对话摘要文本字符上限，超长截断（保留尾部）。')
     tool_result_cache_ttl: int = Field(default=300, ge=0, le=86400,
                                        description='查询工具结果缓存秒数；0=禁用缓存。')
     nlu_threshold: float = Field(default=0.82, ge=0, le=1)

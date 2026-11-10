@@ -123,3 +123,18 @@ class ScheduleEvent(Base):
     status: Mapped[str] = mapped_column(default='active')  # active | done
     invocation_id: Mapped[str] = mapped_column(String(128), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class ConversationSummary(Base):
+    """对话摘要（递进摘要/滑动窗口的持久化载体）。
+
+    当 thread 的原始消息超过窗口阈值时，把最旧的一批「普通文本消息」合并进
+    summary_text（递进摘要：旧摘要 + 增量消息 → 新摘要），避免每轮重算全量历史。
+    工具调用 / 审批 / 系统事件等结构化消息不参与摘要（否则破坏幂等与恢复语义）。
+    按 thread_id 隔离；user_id 冗余便于将来按用户清理。"""
+    __tablename__ = 'conversation_summaries'
+    thread_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    summary_text: Mapped[str] = mapped_column(Text, default='')
+    last_summarized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+

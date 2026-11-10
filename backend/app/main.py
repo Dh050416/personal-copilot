@@ -93,6 +93,9 @@ async def lifespan(app: FastAPI):
     app.state.checkpointer = checkpointer
     app.state.graph = graph
     app.state.tool_cache = tool_cache
+    # 对话摘要（递进摘要/滑动窗口）：在续轮历史裁剪时增量合并被挤出的消息
+    from app.services.summary import SummaryManager
+    app.state.summary_manager = SummaryManager(db, max_chars=settings.summary_max_chars)
     # 线程运行时状态：thread_id → {active, pending(追加输入队列), waiting_approval}
     # 检查点注入（执行中可追加任务）的队列宿主；单进程内存即可（本机单实例）
     app.state.thread_runtime = {}

@@ -14,6 +14,7 @@ from app.agent.graph import initial_input
 from app.agent.tools import _USER_ID
 from app.observability import langfuse_callbacks
 from app.schemas import ChatRequest, ResumeRequest
+from app.services.summary import is_summarizable
 
 router = APIRouter(prefix='/api', tags=['chat'])
 
@@ -109,6 +110,71 @@ def _trim_history(messages):
         else:
             clean = clean[-MAX_HISTORY_MESSAGES:]
     # 工具调用配对修复（截断与历史残缺都可能产生孤立/未配对消息）
+    return _repair_pairs(clean)
+
+
+async def _trim_history_with_summary(messages, thread_id, user_id, summary_manager,
+                                     window_size):
+    """滑动窗口 + 递进摘要的历史裁剪（替代 _trim_history 的升级版）。
+
+    在原有「清理异常消息 + 保留 System + 最近 N 条 + 配对修复」基础上，
+    把「被挤出窗口的普通文本消息」增量合并进对话摘要（不直接丢弃），
+    摘要文本注入回 System 消息，使模型仍能感知早期上下文。
+
+    - 只有「普通文本消息」（Human/AI 纯文本、无 tool_calls）参与摘要；
+      工具调用、审批、系统事件等结构化消息不摘要（否则破坏幂等/恢复语义）。
+    - 摘要只在消息数超窗口时增量更新；未超时零开销（不查库不写库）。
+    - window_size <= 0 时退化为旧的全量截断（不启用摘要）。
+    """
+    if window_size is None or window_size <= 0:
+        return _trim_history(messages)
+
+    # 先做原有清理（丢弃残缺/污染消息）
+    clean = []
+    for m in messages:
+        if isinstance(m, AIMessageChunk) and getattr(m, 'tool_call_chunks', None) \
+                and not getattr(m, 'tool_calls', None):
+            continue
+        if isinstance(m, SystemMessage) and '模型调用失败' in str(m.content):
+            continue
+        clean.append(m)
+
+    # 分离 System 前缀与正文；首条 Human 永不截断
+    system_msgs = [m for m in clean if isinstance(m, SystemMessage)]
+    body = [m for m in clean if not isinstance(m, SystemMessage)]
+    first_human = next((m for m in body if isinstance(m, HumanMessage)), None)
+
+    # 计算正文超出窗口的部分
+    if len(body) > window_size:
+        # 被挤出的正文（不含首条 Human）
+        keep_from = len(body) - window_size
+        # 首条 Human 若在挤出区间，把它单独保护起来
+        evicted = body[:keep_from]
+        kept = body[keep_from:]
+        if first_human is not None and first_human in evicted:
+            evicted = [m for m in evicted if m is not first_human]
+            kept = [first_human, *kept]
+        # 从被挤出的消息里挑出可摘要的文本消息
+        summarizable = [str(m.content) for m in evicted if is_summarizable(m)]
+        # 增量合并摘要（只在有可摘要消息时调用）
+        summary_text = None
+        if summarizable and summary_manager is not None:
+            try:
+                summary_text = await summary_manager.update(thread_id, user_id, summarizable)
+            except Exception:
+                summary_text = None
+        # 重建 body = 摘要(注入 system) + 窗口内正文
+        if summary_text:
+            system_msgs = list(system_msgs)
+            if system_msgs:
+                system_msgs[0] = SystemMessage(
+                    content=f'{system_msgs[0].content}\n\n【对话摘要】{summary_text}')
+            else:
+                system_msgs.insert(0, SystemMessage(content=f'【对话摘要】{summary_text}'))
+        clean = [*system_msgs, *kept]
+    else:
+        clean = [*system_msgs, *body]
+
     return _repair_pairs(clean)
 
 
@@ -334,7 +400,12 @@ async def chat(payload: ChatRequest, request: Request):
     seen_start = 0
     if snapshot.values.get('messages'):
         # 续轮：显式携带历史（AgentState.messages 无 add_messages reducer，输入会整体替换而非追加）
-        history = _trim_history(snapshot.values['messages'])
+        # 滑动窗口 + 递进摘要：窗口内保留最近 N 条，更早的文本消息压入摘要注入 system
+        summary_manager = getattr(request.app.state, 'summary_manager', None)
+        window_size = getattr(getattr(request.app.state, 'settings', None),
+                              'history_window_size', None)
+        history = await _trim_history_with_summary(
+            snapshot.values['messages'], thread_id, user_id, summary_manager, window_size)
         messages = [*history, HumanMessage(content=payload.message)]
         seen_start = len(snapshot.values.get('events', []))
     else:
