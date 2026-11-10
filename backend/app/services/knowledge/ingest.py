@@ -83,8 +83,9 @@ async def ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
                 session.add_all([
                     KnowledgeChunk(
                         document_id=doc_id, user_id=doc.user_id, chunk_index=c.chunk_index,
-                        content=c.content, token_count=len(c.content), embedding=v,
-                        created_at=now_utc())
+                        content=c.content, token_count=len(c.content),
+                        heading_path=' > '.join(c.heading_path) if c.heading_path else None,
+                        page=c.page, embedding=v, created_at=now_utc())
                     for c, v in zip(chunks, vectors)
                 ])
                 doc.status = 'ready'

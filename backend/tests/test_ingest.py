@@ -51,7 +51,7 @@ async def test_ingest_success(db):
     file_bytes = text.encode('utf-8')
     h = compute_content_hash(file_bytes)
     doc = await create_pending_document(db, 1, '测试', 'paste', h)
-    await ingest_document(db, doc.id, 'paste.txt', file_bytes, FakeEmbeddingClient())
+    await ingest_document(db, doc.id, 'paste.md', file_bytes, FakeEmbeddingClient())
 
     async with db.sessions() as session:
         saved = await session.get(KnowledgeDocument, doc.id)
@@ -64,6 +64,8 @@ async def test_ingest_success(db):
         assert all(len(c.embedding) == EMBEDDING_DIM for c in chunks)
         # 第一个块含标题文本（上下文补偿）
         assert '测试文档' in chunks[0].content
+        # heading_path 入库（结构感知分块保留章节路径，第三层检索溯源用）
+        assert any(c.heading_path for c in chunks)
 
 
 @pytest.mark.asyncio

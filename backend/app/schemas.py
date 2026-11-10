@@ -245,6 +245,29 @@ class IngestResponse(StrictModel):
     status: str
 
 
+class SearchKnowledgeArgs(StrictModel):
+    """知识库检索工具入参。"""
+    query: str = Field(min_length=1, max_length=1000, description='检索问题或关键词')
+    top_k: int = Field(default=5, ge=1, le=20, description='召回片段数量')
+
+
+class KnowledgeSearchItem(StrictModel):
+    """一条检索命中（给前端展示溯源用）。"""
+    chunk_id: int
+    content: str
+    heading_path: str | None
+    page: int | None
+    document_id: int
+    distance: float
+
+
+class KnowledgeSearchResult(StrictModel):
+    """知识库检索结果（工具 artifact）。"""
+    query: str
+    count: int
+    items: list[KnowledgeSearchItem]
+
+
 class EmptyArgs(StrictModel):
     pass
 

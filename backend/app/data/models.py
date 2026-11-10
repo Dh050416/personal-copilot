@@ -182,6 +182,9 @@ class KnowledgeChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
     token_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 章节路径（解析时保留的结构信息，检索命中后连同路径喂给模型，避免数字脱离上下文）
+    heading_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding: Mapped[Vector] = mapped_column(Vector(1024))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 

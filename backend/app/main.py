@@ -76,7 +76,13 @@ async def lifespan(app: FastAPI):
             tool_cache = RedisToolResultCache(redis_client, settings.tool_result_cache_ttl)
         else:
             tool_cache = ToolResultCache(settings.tool_result_cache_ttl)
-    graph = make_graph(model, build_tools(db), WRITE_TOOLS, checkpointer,
+    # RAG 知识库 embedding client（本地 ollama bge-m3，与 chat 模型独立配置）
+    # 必须在 build_tools 之前创建：search_knowledge 工具依赖它做 query 向量化
+    from app.services.knowledge.embedding import EmbeddingClient
+    embedding_client = EmbeddingClient(
+        base_url=settings.embedding_base_url, api_key=settings.embedding_api_key,
+        model=settings.embedding_model_name, batch_size=settings.embedding_batch_size)
+    graph = make_graph(model, build_tools(db, embedding_client), WRITE_TOOLS, checkpointer,
                        memory_loader=load_memory_text,
                        tool_timeout=settings.tool_timeout_seconds,
                        model_retries=settings.model_retries,
@@ -94,14 +100,10 @@ async def lifespan(app: FastAPI):
     app.state.checkpointer = checkpointer
     app.state.graph = graph
     app.state.tool_cache = tool_cache
+    app.state.embedding_client = embedding_client
     # 对话摘要（递进摘要/滑动窗口）：在续轮历史裁剪时增量合并被挤出的消息
     from app.services.summary import SummaryManager
     app.state.summary_manager = SummaryManager(db, max_chars=settings.summary_max_chars)
-    # RAG 知识库 embedding client（本地 ollama bge-m3，与 chat 模型独立配置）
-    from app.services.knowledge.embedding import EmbeddingClient
-    app.state.embedding_client = EmbeddingClient(
-        base_url=settings.embedding_base_url, api_key=settings.embedding_api_key,
-        model=settings.embedding_model_name, batch_size=settings.embedding_batch_size)
     # 线程运行时状态：thread_id → {active, pending(追加输入队列), waiting_approval}
     # 检查点注入（执行中可追加任务）的队列宿主；单进程内存即可（本机单实例）
     app.state.thread_runtime = {}
