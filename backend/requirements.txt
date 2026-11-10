@@ -31,6 +31,9 @@ langchain-openai>=0.3,<2
 httpx>=0.27,<1
 # Windows 无系统 tzdata，ZoneInfo('Asia/Shanghai') 依赖此包（graph.py 注入当前日期用）
 tzdata>=2024.1
+# RAG 知识库文档解析：PDF（pdfplumber 按页提取 + 字号判标题）、Word（python-docx 读标题样式）
+pdfplumber>=0.11,<1
+python-docx>=1.1,<2
 
 # ----- 开发依赖 -----
 pytest>=8.3,<10

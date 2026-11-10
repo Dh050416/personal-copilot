@@ -22,6 +22,7 @@ from app.api.bills import router as bills_router
 from app.api.cards import router as cards_router
 from app.api.chat import router as chat_router
 from app.api.events import router as events_router
+from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
 from app.api.reports import router as reports_router
 from app.auth import AuthMiddleware, load_or_create_secret
@@ -96,6 +97,11 @@ async def lifespan(app: FastAPI):
     # 对话摘要（递进摘要/滑动窗口）：在续轮历史裁剪时增量合并被挤出的消息
     from app.services.summary import SummaryManager
     app.state.summary_manager = SummaryManager(db, max_chars=settings.summary_max_chars)
+    # RAG 知识库 embedding client（本地 ollama bge-m3，与 chat 模型独立配置）
+    from app.services.knowledge.embedding import EmbeddingClient
+    app.state.embedding_client = EmbeddingClient(
+        base_url=settings.embedding_base_url, api_key=settings.embedding_api_key,
+        model=settings.embedding_model_name, batch_size=settings.embedding_batch_size)
     # 线程运行时状态：thread_id → {active, pending(追加输入队列), waiting_approval}
     # 检查点注入（执行中可追加任务）的队列宿主；单进程内存即可（本机单实例）
     app.state.thread_runtime = {}
@@ -129,6 +135,7 @@ app.include_router(cards_router)
 app.include_router(events_router)
 app.include_router(memory_router)
 app.include_router(reports_router)
+app.include_router(knowledge_router)
 
 
 @app.get('/health')

@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -212,6 +212,37 @@ class UpsertMemoryRequest(StrictModel):
     """记忆管理界面新增/覆盖一条记忆。key 冲突时覆盖 value（与 save_memory 一致）。"""
     key: str = Field(min_length=1, max_length=128)
     value: str = Field(min_length=1, max_length=500)
+
+
+# ----- RAG 知识库 -----
+class KnowledgeDocumentItem(StrictModel):
+    """文档元数据（列表/详情/轮询状态用）。时间字段由 FastAPI 序列化为 ISO 字符串。"""
+    id: int
+    title: str
+    source_type: str
+    filename: str | None
+    file_size: int | None
+    status: str  # pending | ready | failed
+    error_message: str | None
+    chunk_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeDocumentList(StrictModel):
+    items: list[KnowledgeDocumentItem]
+
+
+class IngestTextRequest(StrictModel):
+    """粘贴文本摄入：用户直接贴一大段文字入库。"""
+    title: str = Field(min_length=1, max_length=255)
+    text: str = Field(min_length=1, max_length=200000)
+
+
+class IngestResponse(StrictModel):
+    """摄入受理响应：异步摄入，立即返回 doc_id + pending，前端轮询状态。"""
+    doc_id: int
+    status: str
 
 
 class EmptyArgs(StrictModel):

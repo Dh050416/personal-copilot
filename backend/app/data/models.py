@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -137,4 +138,50 @@ class ConversationSummary(Base):
     user_id: Mapped[int] = mapped_column(Integer, index=True)
     summary_text: Mapped[str] = mapped_column(Text, default='')
     last_summarized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class KnowledgeDocument(Base):
+    """RAG 知识库文档元数据：一次上传/粘贴对应一条记录。
+
+    - 原始文件不落库，只保留解析后的文本块（见 KnowledgeChunk）。
+    - content_hash（SHA-256）做内容级去重：同一用户重复上传同一内容直接拒绝，
+      跨用户互不影响（联合唯一约束含 user_id）。
+    - status 跟踪摄入状态：pending（切块/向量化中）→ ready / failed；
+      摄入失败只留 failed 记录 + error_message，不产生"半个文档"的脏块。
+    - title 是用户可编辑的展示标题；filename 记录原始文件名（溯源用，不可改）。
+    """
+    __tablename__ = 'knowledge_documents'
+    __table_args__ = (UniqueConstraint('user_id', 'content_hash'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    source_type: Mapped[str] = mapped_column(String(16))  # file | paste
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default='pending')  # pending | ready | failed
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class KnowledgeChunk(Base):
+    """文档分块 + bge-m3 向量（1024 维），RAG 检索的最小单位。
+
+    - content 是块的原始文本：向量只是索引，检索命中后要把 content 喂给模型。
+    - user_id 冗余自文档，检索时直接按用户过滤，不必 join documents。
+    - embedding 用 pgvector 的 Vector 类型；HNSW 索引（余弦距离）在 Alembic 迁移里建。
+    - 删文档时 ON DELETE CASCADE 连带删所有块（真删，无回收站）。
+    """
+    __tablename__ = 'knowledge_chunks'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey('knowledge_documents.id', ondelete='CASCADE'), index=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    token_count: Mapped[int] = mapped_column(Integer, default=0)
+    embedding: Mapped[Vector] = mapped_column(Vector(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 

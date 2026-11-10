@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     model_base_url: str = 'http://127.0.0.1:11434/v1'
     model_name: str = 'qwen3:8b'
     allow_cloud_model: bool = False
+    # ----- RAG embedding（向量化）配置：与 chat 模型完全独立 -----
+    # 默认指向本地 ollama 的 bge-m3（1024 维，与 knowledge_chunks.embedding 维度一致）。
+    # embedding 调用频繁且涉及文档内容隐私，本地跑免费且数据不出本机；
+    # chat 模型（上面 MODEL_*）可独立切 DeepSeek 等云端，两者互不影响。
+    # 注意：Windows 本机用 127.0.0.1 而非 localhost（IPv6 解析坑）。
+    embedding_base_url: str = 'http://127.0.0.1:11434/v1'
+    embedding_model_name: str = 'bge-m3'
+    embedding_api_key: str = 'local'
+    # 单次 /embeddings 请求的批大小（一次向量化多少块，减少网络往返）
+    embedding_batch_size: int = Field(default=16, ge=1, le=128)
     max_steps: int = Field(default=8, ge=1, le=30)
     max_tokens: int = Field(default=20000, ge=512)
     model_output_tokens: int = Field(default=1500, ge=128)
@@ -57,6 +67,11 @@ class Settings(BaseSettings):
                                      description='滑动窗口保留的最近消息条数；超出的文本消息增量合并进摘要。')
     summary_max_chars: int = Field(default=4000, ge=500, le=20000,
                                    description='单条对话摘要文本字符上限，超长截断（保留尾部）。')
+    # ----- RAG 分块参数：结构感知 + 递归字符 + 重叠 -----
+    chunk_size: int = Field(default=400, ge=100, le=2000,
+                            description='分块目标字符数；太小语义不完整，太大稀释检索精度。')
+    chunk_overlap: int = Field(default=50, ge=0, le=500,
+                               description='相邻块重叠字符数（约块大小10-15%），防止边界信息被切断。')
     tool_result_cache_ttl: int = Field(default=300, ge=0, le=86400,
                                        description='查询工具结果缓存秒数；0=禁用缓存。')
     nlu_threshold: float = Field(default=0.82, ge=0, le=1)
