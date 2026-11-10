@@ -1,10 +1,17 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
+def now_utc() -> datetime:
+    """系统时间戳默认值：带时区的 UTC 当前时间。"""
+    return datetime.now(timezone.utc)
+
+
 def now_iso() -> str:
+    """业务/事件序列化用的 ISO 字符串时间戳（graph 事件、审批 payload 等）。
+    数据库系统时间戳字段已改用 DateTime(timezone=True)，此函数仅服务于非入库场景。"""
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -18,7 +25,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[str] = mapped_column(default=now_iso)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class Bill(Base):
@@ -41,7 +48,7 @@ class Bill(Base):
     category: Mapped[str] = mapped_column(String(64), default='其他')
     category_source: Mapped[str] = mapped_column(String(32), default='auto')
     category_confidence: Mapped[float] = mapped_column(default=0.0)
-    category_checked_at: Mapped[str] = mapped_column(String(40), default='')
+    category_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str] = mapped_column(String(32))
     import_batch_id: Mapped[str] = mapped_column(String(64))
     source_sheet: Mapped[str] = mapped_column(String(128))
@@ -53,7 +60,7 @@ class ImportBatch(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
     filename: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[str] = mapped_column(default=now_iso)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     report_json: Mapped[str] = mapped_column(Text)
 
 
@@ -75,7 +82,7 @@ class TrackingCard(Base):
     # 泳道（看板栏目）：用户明确说「放在 XX 栏目」时原样写入；NULL = 按分类/用途推导
     lane: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     invocation_id: Mapped[str] = mapped_column(String(128), unique=True)
-    created_at: Mapped[str] = mapped_column(default=now_iso)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class AgentMemory(Base):
@@ -85,7 +92,7 @@ class AgentMemory(Base):
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
-    updated_at: Mapped[str] = mapped_column(String(40), default=now_iso)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class IdempotencyRecord(Base):
@@ -99,7 +106,7 @@ class IdempotencyRecord(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     content: Mapped[str] = mapped_column(Text, default='')
     response_json: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[str] = mapped_column(String(40), default=now_iso)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class ScheduleEvent(Base):
@@ -115,4 +122,4 @@ class ScheduleEvent(Base):
     note: Mapped[str] = mapped_column(Text, default='')
     status: Mapped[str] = mapped_column(default='active')  # active | done
     invocation_id: Mapped[str] = mapped_column(String(128), unique=True)
-    created_at: Mapped[str] = mapped_column(default=now_iso)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

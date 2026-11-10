@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import select, update
 
-from app.data.models import Bill, ImportBatch, now_iso
+from app.data.models import Bill, ImportBatch, now_utc
 from app.data.views import bill_view
 from app.services.classification import PROTECTED_SOURCES
 
@@ -46,7 +46,7 @@ async def import_rows(db, user_id, rows, filename, classifier):
                 existing = await session.scalar(select(Bill).where(
                     Bill.user_id == user_id, Bill.source == row['source'], Bill.tx_no == row['tx_no']))
                 if existing is None:
-                    session.add(Bill(user_id=user_id, **row, import_batch_id=batch_id, category_checked_at=now_iso()))
+                    session.add(Bill(user_id=user_id, **row, import_batch_id=batch_id, category_checked_at=now_utc()))
                     inserted += 1
                     continue
                 if any(getattr(existing, key) != row[key] for key in CORE_FIELDS):
@@ -60,7 +60,7 @@ async def import_rows(db, user_id, rows, filename, classifier):
                     for key in CLASS_FIELDS:
                         changed = changed or getattr(existing, key) != row[key]
                         setattr(existing, key, row[key])
-                    existing.category_checked_at = now_iso()
+                    existing.category_checked_at = now_utc()
                 enriched += int(changed)
     return {'status': 'imported', 'batch_id': batch_id, 'inserted': inserted, 'enriched': enriched,
             'skipped': len(rows) - inserted, 'errors': [], 'classification': report}
@@ -101,7 +101,7 @@ async def add_bill(db, user_id, args, idempotency_key: str | None = None):
                 category=args.category,
                 category_source='manual',
                 category_confidence=1.0,
-                category_checked_at=now_iso(),
+                category_checked_at=now_utc(),
                 source='manual',
                 import_batch_id='manual',
                 source_sheet='',
@@ -130,6 +130,6 @@ async def classify_existing(db, user_id, classifier, limit):
                 result = await session.execute(update(Bill).where(
                     Bill.id == row['id'], Bill.user_id == user_id,
                     Bill.category_source.in_(['auto', 'unclassified'])
-                ).values(**{k: row[k] for k in CLASS_FIELDS}, category_checked_at=now_iso()))
+                ).values(**{k: row[k] for k in CLASS_FIELDS}, category_checked_at=now_utc()))
                 updated += result.rowcount if row['category_source'] in {'rule', 'llm'} else 0
     return {'processed': len(rows), 'classified': updated, **report}

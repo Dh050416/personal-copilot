@@ -18,7 +18,7 @@ import httpx
 from langchain_core.tools import tool
 from sqlalchemy import func, select
 
-from app.data.models import AgentMemory, Bill, IdempotencyRecord, ScheduleEvent, TrackingCard, now_iso
+from app.data.models import AgentMemory, Bill, IdempotencyRecord, ScheduleEvent, TrackingCard, now_utc
 from app.data.views import bill_view, card_view, event_view
 from app.errors import ToolError
 from app.schemas import (
@@ -392,9 +392,9 @@ def build_tools(db):
                 existing = await session.get(AgentMemory, (user_id, args.key))
                 if existing is not None:
                     existing.value = args.value
-                    existing.updated_at = now_iso()
+                    existing.updated_at = now_utc()
                 else:
-                    session.add(AgentMemory(user_id=user_id, key=args.key, value=args.value, updated_at=now_iso()))
+                    session.add(AgentMemory(user_id=user_id, key=args.key, value=args.value, updated_at=now_utc()))
         return f'已记住：{args.key} = {args.value}', SaveMemoryResult(key=args.key, value=args.value)
 
     @tool('list_tracking_cards', args_schema=ListTrackingCardsArgs,

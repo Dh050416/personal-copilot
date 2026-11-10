@@ -8,7 +8,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
-from app.data.models import AgentMemory, now_iso
+from app.data.models import AgentMemory, now_utc
 from app.schemas import MemoryItem, MemoryList, UpsertMemoryRequest
 
 router = APIRouter(prefix='/api/memory', tags=['memory'])
@@ -36,10 +36,10 @@ async def upsert_memory(payload: UpsertMemoryRequest, request: Request):
             existing = await session.get(AgentMemory, (request.state.user_id, payload.key))
             if existing is not None:
                 existing.value = payload.value
-                existing.updated_at = now_iso()
+                existing.updated_at = now_utc()
                 obj = existing
             else:
-                obj = AgentMemory(user_id=request.state.user_id, key=payload.key, value=payload.value, updated_at=now_iso())
+                obj = AgentMemory(user_id=request.state.user_id, key=payload.key, value=payload.value, updated_at=now_utc())
                 session.add(obj)
     return _view(obj)
 

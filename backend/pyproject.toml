@@ -18,6 +18,7 @@ dependencies = [
     "langgraph>=1.0,<2",
     "langgraph-checkpoint-postgres>=3.0,<4",
     "psycopg[binary]>=3.1,<4",
+    "redis>=5.0,<6",
     "openai>=1.60,<3",
     "python-multipart>=0.0.18,<1",
     "langfuse>=3.0,<4",

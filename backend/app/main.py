@@ -65,7 +65,16 @@ async def lifespan(app: FastAPI):
             return None
         return '；'.join(f'{r.key}={r.value}' for r in rows)
 
-    tool_cache = ToolResultCache(settings.tool_result_cache_ttl) if settings.tool_result_cache_ttl else None
+    tool_cache = None
+    redis_client = None
+    if settings.tool_result_cache_ttl:
+        if settings.redis_url:
+            from redis.asyncio import Redis
+            from app.cache import RedisToolResultCache
+            redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+            tool_cache = RedisToolResultCache(redis_client, settings.tool_result_cache_ttl)
+        else:
+            tool_cache = ToolResultCache(settings.tool_result_cache_ttl)
     graph = make_graph(model, build_tools(db), WRITE_TOOLS, checkpointer,
                        memory_loader=load_memory_text,
                        tool_timeout=settings.tool_timeout_seconds,
@@ -93,6 +102,8 @@ async def lifespan(app: FastAPI):
         langfuse_flush()
         await checkpoint_cm.__aexit__(None, None, None)
         await db.close()
+        if redis_client is not None:
+            await redis_client.aclose()
 
 
 app = FastAPI(title='PersonalCopilot', lifespan=lifespan)

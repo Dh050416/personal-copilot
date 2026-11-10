@@ -17,6 +17,8 @@ langgraph>=1.0,<2
 # checkpoint 存 PostgreSQL（psycopg 同步方言；binary 提供预编译 libpq）
 langgraph-checkpoint-postgres>=3.0,<4
 psycopg[binary]>=3.1,<4
+# Redis 客户端（工具结果缓存，多实例/多 worker 共享；redis.asyncio 异步接口）
+redis>=5.0,<6
 openai>=1.60,<3
 python-multipart>=0.0.18,<1
 langfuse>=3.0,<4

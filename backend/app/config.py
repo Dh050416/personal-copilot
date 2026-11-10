@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     checkpoint_url: str = 'postgresql://postgres:123456@127.0.0.1:5432/PersonManager'
     # 测试专用库：pytest fixture 用它建表/清表，避免污染开发库。仅测试环境使用。
     test_database_url: str = 'postgresql+asyncpg://postgres:123456@127.0.0.1:5432/PersonManager_test'
+    # Redis 连接串（工具结果缓存）。留空则回退到进程内内存缓存（单实例够用）；
+    # 生产多实例/多 worker 需共享缓存时配置为 redis://host:6379/0。
+    # 注意：Windows 本机也用 127.0.0.1 而非 localhost（同 DATABASE_URL 的 IPv6 坑）。
+    redis_url: str = ''
     model_provider: Literal['openai_compatible'] = 'openai_compatible'
     model_api_key: str = 'local'
     model_base_url: str = 'http://127.0.0.1:11434/v1'

@@ -26,6 +26,16 @@ config.set_main_option('sqlalchemy.url', settings.database_url)
 
 target_metadata = Base.metadata
 
+# checkpoint_* 表由 langgraph（AsyncPostgresSaver.setup）运行时创建，不在 Base.metadata 里，
+# autogenerate 会把它们误判为「应删除」。这里显式排除，避免迁移脚本生成 drop_table。
+EXCLUDE_TABLES = {'checkpoints', 'checkpoint_blobs', 'checkpoint_writes', 'checkpoint_migrations'}
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    if type_ == 'table' and name in EXCLUDE_TABLES:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
     """离线模式：只输出 SQL 不连库（`alembic upgrade head --sql`）。"""
@@ -35,13 +45,14 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={'paramstyle': 'named'},
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(connection=connection, target_metadata=target_metadata, include_object=include_object)
     with context.begin_transaction():
         context.run_migrations()
 
