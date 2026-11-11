@@ -7,6 +7,13 @@
 
 ### 新增
 
+- **日历手动录入与 Agent/HITL 解耦**：`api/events.py` 新增 `POST /api/events`、
+  `PATCH /api/events/{id}`、`POST /api/events/{id}/complete` 三个直连端点，复用
+  `schedule_service` 与现有 `CreateEventArgs` / `UpdateEventArgs` 契约，`ToolError` 转 REST 404；
+  `CalendarView.vue` 删除「把表单拼成中文指令发 /api/chat」与整套审批状态机，改直调 REST。
+  手填参数无需模型推断，因此零模型调用、零延迟、不会被模型改写，也不占用会话运行锁；
+  对话区自然语言创建日程仍走 `WRITE_TOOLS` + HITL。直连写操作补带 rid 的结构化日志留痕。
+  新增 `backend/tests/test_events_api.py`（9 条，含真实 app 端到端与跨用户隔离）。
 - **稳定运行 + 可观测性（A + C 的一半）**：纯 ASGI 中间件生成 `request_id`（可透传网关的
   `X-Request-ID`），写入 ContextVar / `request.state` / 响应头；结构化单行 JSON 日志；
   `HTTPException` / `RequestValidationError` / `Exception` 三个全局异常处理器统一返回带 rid 的

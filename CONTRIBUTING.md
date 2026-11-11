@@ -14,7 +14,7 @@
   云端必须显式 `ALLOW_CLOUD_MODEL=true` 才能启动。
 
 需要新增工具时，请一并补上：`args_schema`（Pydantic `StrictModel`）、`OUTPUT_SCHEMAS` 输出契约、
-是否属于 `WRITE_TOOLS`（写工具必须走人工审批）、是否属于 `CACHEABLE_TOOLS`（**只有只读工具**可缓存），
+是否属于 `WRITE_TOOLS`（Agent 链路里的写工具必须走人工审批；手动表单录入走直连 REST，不进图）、是否属于 `CACHEABLE_TOOLS`（**只有只读工具**可缓存），
 以及 `tests/` 下的专项用例。
 
 ## 环境准备

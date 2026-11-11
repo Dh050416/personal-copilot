@@ -3,7 +3,9 @@
 ## 支持范围
 
 本项目是实验框架，没有正式的安全发布流程。但仍然欢迎报告安全问题——尤其是
-**数据外传**、**写操作绕过人工确认**和**跨用户数据隔离失效**这三类，它们是本项目设计上最在意的边界。
+**数据外传**、**模型推断的写操作绕过人工确认**和**跨用户数据隔离失效**这三类，它们是本项目设计上最在意的边界。
+注意边界的适用范围：用户手填表单的确定性录入（看板 / 日历）走直连 REST，不经模型，
+因此也不经 HITL——「表单已经填完再弹一次确认」不是安全机制，只是重复劳动。
 
 ## 报告方式
 
@@ -18,7 +20,8 @@
 | 边界 | 机制 | 位置 |
 | --- | --- | --- |
 | 云模型数据外传 | 非 localhost 的模型地址必须显式 `ALLOW_CLOUD_MODEL=true`，否则启动即报错 | `backend/app/config.py` |
-| 写操作必须人工确认 | 所有 `WRITE_TOOLS` 在进入执行前经 LangGraph `interrupt` 挂起 | `backend/app/agent/graph.py` |
+| 模型推断的写操作必须人工确认 | 对话区 `/api/chat` 里所有 `WRITE_TOOLS` 在进入执行前经 LangGraph `interrupt` 挂起 | `backend/app/agent/graph.py` |
+| 直连写操作越权 / 误改 | `cards.py` / `events.py` 一律用 `request.state.user_id` 调 service（service 内再按 user_id 过滤）；`PATCH /api/events/{id}` 校验 path 与 body 的 `event_id` 一致 | `backend/app/api/` |
 | 审批标识不匹配 | resume 时校验 `approval_id`，不一致直接拒绝执行 | `make_approve_node` |
 | 审批被跨用户伪造 | resume 校验 `run_id` 必须带 `u{user_id}:` 前缀 | `backend/app/api/chat.py` |
 | 重复执行造成重复写入 | 请求级幂等键（`apr-{tool_call id}`）+ 同事务查重 | `backend/app/agent/tools.py` |

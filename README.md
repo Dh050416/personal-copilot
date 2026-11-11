@@ -160,7 +160,7 @@ python scripts/gen_sample_bills.py     # 生成 samples/sample_bills.xlsx
 | `MODEL_RETRIES` | 2 | 模型调用失败重试次数，指数退避（`RETRY_BACKOFF_SECONDS * 2^attempt`） |
 | `RETRY_BACKOFF_SECONDS` | 0.5 | 重试基础退避秒数 |
 | `TOOL_RETRIES` | 2 | 工具执行失败自动重试次数（指数退避）；只重试瞬时错误（超时/显式 retryable），参数校验与业务失败不重试；重试复用同一 tool call id → 幂等键不变 → 写工具查重兜底不重复建卡；0=禁用 |
-| `APPROVAL_TTL_SECONDS` | 86400 | 审批有效期：过期后 resume 返回 410，需重新发起 |
+| `APPROVAL_TTL_SECONDS` | 86400 | 审批有效期：过期后 `approve` 返回 410；点「拒绝」可放弃该操作并让会话恢复，或新建会话重新发起 |
 
 工具层还有一个不依赖配置的硬治理：**输出契约校验**。每个工具在 `app/agent/tools.py` 的
 `OUTPUT_SCHEMAS` 声明输出结构，`run_tools` 在统一出口用 Pydantic 对 artifact 二次校验，
@@ -249,6 +249,22 @@ REST 端点在 `/api/knowledge/documents*`，专项测试见
 
 > 尚未实现：告警 / 健康检查异常「早发现」（B），以及按轮次回溯原始消息的消息表。
 > 设计取舍见 [ADR 0005](docs/adr/0005-request_id%20与%20Langfuse%20trace%20关联.md)。
+
+## 手动录入与 Agent 写入解耦
+
+HITL 审批的目的是复核**模型从自然语言里推断出的参数**。用户自己手填的表单参数是确定性的，
+再确认一次没有信息增益，所以看板与日历的手动操作走直连 REST，不进 `/api/chat`：
+
+| 入口 | 链路 | 是否审批 |
+| --- | --- | --- |
+| 对话区自然语言「帮我建个日程」 | `/api/chat` → Supervisor → `WRITE_TOOLS` → `interrupt` → resume | 是 |
+| 看板手动建卡 / 完成 / 删除 | `POST /api/cards` 等 → `card_service` | 否 |
+| 日历手动新建 / 改期 / 完成 | `POST`/`PATCH` `/api/events` → `schedule_service` | 否 |
+
+三条链路共用同一套 `schemas` / service / 用户隔离 / 输出契约，差别只是少了模型与审批两层。
+日历页因此零模型调用、零延迟、标题与时间不会被模型改写，也不会占用会话运行锁。
+直连写操作不产生 Langfuse trace，改由 `logger.info` 打一条带 `request_id` 的结构化日志留痕。
+接口测试见 `backend/tests/test_events_api.py`——用只挂 `events_router` 的 mini app 验证这条链路确实不经过 chat。
 
 ## 幂等与重试安全
 
