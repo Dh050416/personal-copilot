@@ -94,6 +94,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         path = request.url.path
+        # 浏览器跨域预检（OPTIONS）不携带 token，须直接放行给内层 CORSMiddleware，
+        # 否则预检被本中间件拦成 401 且无 CORS 头，前端请求会被浏览器全部拒绝。
+        if request.method == 'OPTIONS':
+            return await call_next(request)
         if path in _PUBLIC_PATHS or path in _AUTH_PATHS:
             return await call_next(request)
         auth = request.headers.get('authorization', '')
