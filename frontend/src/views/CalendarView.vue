@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue"
-import { getEvents, postMessage, resume, type EventItem } from "../services/agentClient"
-import type { AgentEvent } from "../tools/types"
+import {
+  completeEvent,
+  createEvent,
+  getEvents,
+  updateEvent,
+  type CreateEventInput,
+  type EventItem,
+} from "../services/agentClient"
 
 // ========== 月历状态（只读部分） ==========
 const today = new Date()
@@ -111,12 +117,9 @@ function hasDone(dateStr: string): boolean {
   return eventsOf(dateStr).some((e) => e.status === "done")
 }
 
-// ========== 操作状态（独立于对话区 store：固定新会话，不污染对话历史） ==========
-/** idle | running(提交指令/等待审批) | resuming(审批恢复中) */
-const opState = ref<"idle" | "running" | "resuming">("idle")
-const opApproval = ref<{ runId: string; approvalId: string; tool: string; args: Record<string, unknown> } | null>(null)
+// ========== 手动写操作状态（直连 REST，与对话区 Agent/HITL 完全解耦） ==========
+const busy = ref(false)
 const opNotice = ref("") // 操作完成/失败提示
-const opRunning = computed(() => opState.value !== "idle")
 
 // 新建表单
 const showForm = ref(false)
@@ -144,66 +147,20 @@ function closeResched(): void {
   resched.value = null
 }
 
-/** 日历操作指令统一走 Agent 写工具 + HITL 审批（与对话区同一套后端治理） */
-async function runInstruction(instruction: string): Promise<void> {
-  opState.value = "running"
+/** 统一执行一个写操作：串行化、成功后刷新月历、失败给出可读提示。
+ * 手填参数是确定性的，直接打 REST；不经过模型，也不需要 HITL 二次确认。 */
+async function runWrite(action: () => Promise<unknown>, successText: string): Promise<void> {
+  if (busy.value) return
+  busy.value = true
   opNotice.value = ""
-  opApproval.value = null
   try {
-    // 每次操作新开会话（session_id 缺省），指令自包含，审批/结果互不串扰
-    const res = await postMessage(instruction, undefined, handleOpEvent)
-    if (res.queued) {
-      opNotice.value = "后端当前有任务在执行，操作已排队，稍后自动生效。"
-    }
+    await action()
+    opNotice.value = successText
+    await loadMonth()
   } catch (e) {
-    opNotice.value = `操作请求失败：${e instanceof Error ? e.message : String(e)}`
+    opNotice.value = `操作失败：${e instanceof Error ? e.message : String(e)}`
   } finally {
-    // 审批弹出或 final/错误时 handleOpEvent 已重置状态；此处兜底回到 idle
-    opState.value = "idle"
-  }
-}
-
-function handleOpEvent(event: AgentEvent): void {
-  switch (event.type) {
-    case "approval_created":
-      opApproval.value = {
-        runId: event.run_id ?? "",
-        approvalId: String(event.payload.approval_id ?? ""),
-        tool: String(event.payload.tool ?? ""),
-        args: (event.payload.args as Record<string, unknown>) ?? {},
-      }
-      opState.value = "idle" // 等用户确认，不再推进
-      break
-    case "final":
-      opNotice.value = String(event.payload.text ?? "")
-      opApproval.value = null
-      opState.value = "idle"
-      void loadMonth()
-      break
-    case "clarification":
-      opNotice.value = String(event.payload.text ?? "")
-      opApproval.value = null
-      opState.value = "idle"
-      break
-    case "error":
-      opNotice.value = `运行失败：${String(event.payload.error ?? "")}`
-      opApproval.value = null
-      opState.value = "idle"
-      break
-    default:
-      break
-  }
-}
-
-async function decideApproval(decision: "approve" | "reject"): Promise<void> {
-  const pending = opApproval.value
-  if (!pending || opState.value !== "idle") return
-  opState.value = "resuming"
-  try {
-    await resume(pending.runId, pending.approvalId, decision, handleOpEvent)
-  } catch (e) {
-    opNotice.value = `审批恢复失败：${e instanceof Error ? e.message : String(e)}`
-    opState.value = "idle"
+    busy.value = false
   }
 }
 
@@ -218,14 +175,21 @@ function submitNew(): void {
     formError.value = "请填写日期与开始时间"
     return
   }
-  const startAt = `${f.date}T${f.start}`
-  const parts = [`新建日程：标题「${f.title.trim()}」`, `${f.date} ${f.start}`]
-  if (f.end) parts.push(`结束时间 ${f.end}`)
-  if (f.location.trim()) parts.push(`地点「${f.location.trim()}」`)
-  if (f.note.trim()) parts.push(`备注「${f.note.trim()}」`)
-  parts.push("请直接创建，无需向我确认。")
-  closeForm()
-  void runInstruction(parts.join("，"))
+  if (f.end && f.end < f.start) {
+    formError.value = "结束时间不能早于开始时间"
+    return
+  }
+  const input: CreateEventInput = {
+    title: f.title.trim(),
+    start_at: `${f.date}T${f.start}`,
+    ...(f.end ? { end_at: `${f.date}T${f.end}` } : {}),
+    ...(f.location.trim() ? { location: f.location.trim() } : {}),
+    ...(f.note.trim() ? { note: f.note.trim() } : {}),
+  }
+  void runWrite(async () => {
+    await createEvent(input)
+    closeForm() // 失败时保留表单，用户不用重填
+  }, "日程已创建")
 }
 
 function submitResched(): void {
@@ -233,13 +197,14 @@ function submitResched(): void {
   if (!r) return
   const dt = r.datetime.trim()
   if (!dt) return
-  const instruction = `将日程 #${r.event.id}「${r.event.title}」改期到 ${dt.replace("T", " ")}。请直接执行，无需向我确认。`
-  closeResched()
-  void runInstruction(instruction)
+  void runWrite(async () => {
+    await updateEvent(r.event.id, { event_id: r.event.id, start_at: dt })
+    closeResched()
+  }, "日程已改期")
 }
 
 function markDone(e: EventItem): void {
-  void runInstruction(`将日程 #${e.id}「${e.title}」标记为完成。请直接执行，无需向我确认。`)
+  void runWrite(() => completeEvent(e.id), "已标记完成")
 }
 
 onMounted(loadMonth)
@@ -251,23 +216,21 @@ watch([year, month], loadMonth)
     <div class="page-head card">
       <div>
         <h1 class="page-title">日历行程</h1>
-        <p class="muted">月历只读展示日程；新建/完成/改期在本页直接操作（写操作经人工确认后生效）。</p>
+        <p class="muted">新建 / 改期 / 完成在本页直接保存，无需模型确认；对话区用自然语言创建日程仍会经人工确认。</p>
       </div>
       <div class="head-actions">
-        <button class="btn" :disabled="loading || opRunning" @click="loadMonth">
+        <button class="btn" :disabled="loading || busy" @click="loadMonth">
           {{ loading ? "加载中…" : "刷新" }}
         </button>
-        <button class="btn btn-primary" :disabled="opRunning" @click="openForm">+ 新建日程</button>
+        <button class="btn btn-primary" :disabled="busy" @click="openForm">+ 新建日程</button>
       </div>
     </div>
 
     <!-- 操作状态条 -->
-    <div v-if="opRunning || opNotice" class="card op-bar">
-      <span v-if="opState === 'running'" class="op-spinner" />
-      <span class="op-text">
-        {{ opState === "running" ? "正在提交操作…" : opState === "resuming" ? "正在执行…" : opNotice }}
-      </span>
-      <button v-if="!opRunning && opNotice" class="btn icon-btn" title="关闭" @click="opNotice = ''">✕</button>
+    <div v-if="busy || opNotice" class="card op-bar">
+      <span v-if="busy" class="op-spinner" />
+      <span class="op-text">{{ busy ? "正在保存…" : opNotice }}</span>
+      <button v-if="!busy && opNotice" class="btn icon-btn" title="关闭" @click="opNotice = ''">✕</button>
     </div>
 
     <div class="calendar-grid">
@@ -325,8 +288,8 @@ watch([year, month], loadMonth)
               <span v-if="e.note">{{ e.note }}</span>
             </div>
             <div v-if="e.status === 'active'" class="event-actions">
-              <button class="btn btn-mini" :disabled="opRunning" @click="openResched(e)">改期</button>
-              <button class="btn btn-mini btn-ok" :disabled="opRunning" @click="markDone(e)">完成</button>
+              <button class="btn btn-mini" :disabled="busy" @click="openResched(e)">改期</button>
+              <button class="btn btn-mini btn-ok" :disabled="busy" @click="markDone(e)">完成</button>
             </div>
           </li>
         </ul>
@@ -365,9 +328,9 @@ watch([year, month], loadMonth)
         </label>
         <p v-if="formError" class="error-text">{{ formError }}</p>
         <div class="modal-actions">
-          <button class="btn" :disabled="opRunning" @click="closeForm">取消</button>
-          <button class="btn btn-primary" :disabled="opRunning" @click="submitNew">
-            提交（需人工确认）
+          <button class="btn" :disabled="busy" @click="closeForm">取消</button>
+          <button class="btn btn-primary" :disabled="busy" @click="submitNew">
+            保存日程
           </button>
         </div>
       </div>
@@ -382,35 +345,14 @@ watch([year, month], loadMonth)
           <input v-model="resched.datetime" type="datetime-local" class="input" />
         </label>
         <div class="modal-actions">
-          <button class="btn" :disabled="opRunning" @click="closeResched">取消</button>
-          <button class="btn btn-primary" :disabled="opRunning" @click="submitResched">
-            提交（需人工确认）
+          <button class="btn" :disabled="busy" @click="closeResched">取消</button>
+          <button class="btn btn-primary" :disabled="busy" @click="submitResched">
+            保存改期
           </button>
         </div>
       </div>
     </div>
 
-    <!-- 审批卡（日历操作专用，样式与对话区 ApprovalCard 一致） -->
-    <div v-if="opApproval" class="modal-mask" @click.self="() => {}">
-      <div class="modal card approval-card">
-        <div class="approval-title">
-          <span class="badge badge-amber">人在环确认</span>
-          <span>写操作需要你的确认</span>
-        </div>
-        <div class="approval-meta">
-          <div class="meta-row"><span class="muted">工具</span><span class="mono">{{ opApproval.tool }}</span></div>
-          <div class="meta-row"><span class="muted">审批 ID</span><span class="mono">{{ opApproval.approvalId }}</span></div>
-        </div>
-        <pre class="mono args">{{ JSON.stringify(opApproval.args, null, 2) }}</pre>
-        <div class="approval-actions">
-          <button class="btn btn-approve" :disabled="opState === 'resuming'" @click="decideApproval('approve')">
-            {{ opState === "resuming" ? "执行中…" : "确认执行" }}
-          </button>
-          <button class="btn btn-danger" :disabled="opState === 'resuming'" @click="decideApproval('reject')">拒绝</button>
-        </div>
-        <p class="muted note">确认后参数会再次校验；执行参数与确认参数不一致时会被拒绝。</p>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -476,22 +418,6 @@ watch([year, month], loadMonth)
 }
 .btn-ok:hover:not(:disabled) {
   background: var(--success-weak);
-}
-.btn-danger {
-  color: var(--danger);
-  border-color: var(--danger);
-  background: var(--surface);
-}
-.btn-danger:hover:not(:disabled) {
-  background: var(--danger-weak);
-}
-.btn-approve {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: #fff;
-}
-.btn-approve:hover:not(:disabled) {
-  opacity: 0.88;
 }
 .icon-btn {
   padding: 7px 12px;
@@ -721,10 +647,6 @@ watch([year, month], loadMonth)
   background: var(--neutral-weak);
   color: var(--text-2);
 }
-.badge-amber {
-  background: #fef3c7;
-  color: #92400e;
-}
 
 .modal-mask {
   position: fixed;
@@ -782,50 +704,4 @@ watch([year, month], loadMonth)
   margin-top: 14px;
 }
 
-.approval-card {
-  border-color: #f3d9a4;
-  background: #fffdf7;
-}
-.approval-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-weight: 600;
-  margin-bottom: 12px;
-}
-.approval-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-.meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.mono {
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
-}
-.args {
-  margin: 0 0 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 12px;
-  font-size: 12px;
-  max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.approval-actions {
-  display: flex;
-  gap: 10px;
-}
-.note {
-  margin: 10px 0 0;
-}
 </style>

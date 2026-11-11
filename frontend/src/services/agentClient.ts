@@ -371,6 +371,59 @@ export async function getEvents(params: {
   return data.items
 }
 
+/* ---------- 日历直连写接口 ----------
+ * 日历表单是用户手填的确定性录入，参数不需要模型推断，因此直接打 REST，
+ * 不走 postMessage + HITL 审批（与看板 cards 接口同一范式）。
+ * 对话区用自然语言创建日程仍走 Agent 工具 + 人工确认，那条链路不变。
+ */
+
+export interface CreateEventInput {
+  title: string
+  start_at: string
+  end_at?: string
+  location?: string
+  note?: string
+}
+
+/** 后端 UpdateEventArgs 要求 body 自带 event_id，端点会校验它与路径一致。 */
+export interface UpdateEventInput {
+  event_id: number
+  title?: string
+  start_at?: string
+  end_at?: string
+  location?: string
+  note?: string
+}
+
+async function eventResponse(response: Response, fallback: string): Promise<EventItem> {
+  const data = (await response.json()) as EventItem & { detail?: unknown }
+  if (!response.ok) {
+    const detail = typeof data.detail === "string"
+      ? data.detail
+      : Array.isArray(data.detail) ? "参数校验失败，请检查时间格式" : fallback
+    throw new Error(detail)
+  }
+  return data
+}
+
+export async function createEvent(input: CreateEventInput): Promise<EventItem> {
+  return eventResponse(await postJson("/api/events", input), "日程新建失败")
+}
+
+export async function completeEvent(eventId: number): Promise<EventItem> {
+  const response = await authedFetch(`${API_BASE}/api/events/${eventId}/complete`, { method: "POST" })
+  return eventResponse(response, "标记完成失败")
+}
+
+export async function updateEvent(eventId: number, input: UpdateEventInput): Promise<EventItem> {
+  const response = await authedFetch(`${API_BASE}/api/events/${eventId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+  return eventResponse(response, "日程修改失败")
+}
+
 /** 长期记忆条目 */
 export interface MemoryItem {
   key: string
