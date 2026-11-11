@@ -180,9 +180,12 @@ export const useSessionStore = defineStore("session", () => {
       case "tool_result":
         handleToolResult(event.payload as unknown as ToolResultPayload)
         break
-      case "error":
-        answer.value = `运行失败：${String(event.payload.error ?? "")}`
+      case "error": {
+        const rid = event.payload.request_id
+        const suffix = rid ? `\n（问题编号 ${String(rid)}，反馈时请附上）` : ""
+        answer.value = `运行失败：${String(event.payload.error ?? "")}${suffix}`
         break
+      }
       default:
         break
     }

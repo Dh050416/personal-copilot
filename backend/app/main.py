@@ -1,9 +1,13 @@
 import asyncio
+import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from langchain_openai import ChatOpenAI
 
 # Windows 下 psycopg（checkpoint-postgres 的驱动）异步模式不支持 ProactorEventLoop，
@@ -29,12 +33,20 @@ from app.auth import AuthMiddleware, load_or_create_secret
 from app.config import Settings
 from app.data.db import Database
 from app.data.models import AgentMemory
+from app.logging_config import setup_logging
+from app.middleware import REQUEST_ID_HEADER, RequestIdMiddleware, get_request_id
 from app.observability import flush as langfuse_flush
 from app.observability import init_langfuse
+
+# 应用导入期就装好 JSON 日志（脚本 / pytest 入口不经过 uvicorn）。
+# uvicorn 启动时会用 dictConfig 覆盖 logging，故 lifespan 里再装一次，保证两种入口一致。
+setup_logging()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    setup_logging()  # 覆盖 uvicorn 的默认纯文本日志配置
     settings = Settings()
     init_langfuse(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -71,6 +83,7 @@ async def lifespan(app: FastAPI):
     if settings.tool_result_cache_ttl:
         if settings.redis_url:
             from redis.asyncio import Redis
+
             from app.cache import RedisToolResultCache
             redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
             tool_cache = RedisToolResultCache(redis_client, settings.tool_result_cache_ttl)
@@ -130,6 +143,8 @@ app.add_middleware(
 )
 # 访问鉴权：按用户令牌（user_id 签名）隔离数据。注册/登录/健康检查放行。
 app.add_middleware(AuthMiddleware, secret=load_or_create_secret(_boot_settings.data_dir))
+# 最外层（最后注册）：让 OPTIONS 预检、401、流式响应异常也都带上 request_id
+app.add_middleware(RequestIdMiddleware)
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(bills_router)
@@ -143,3 +158,52 @@ app.include_router(knowledge_router)
 @app.get('/health')
 async def health():
     return {'status': 'ok', 'model_provider': app.state.settings.model_provider}
+
+
+# ----- 全局异常兜底（A）：任何未处理异常都转成带 request_id 的 JSON，进程不崩 -----
+# 三者都只把 rid + 可读提示返回前端，完整堆栈留在结构化日志里，避免泄露内部信息。
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(request: Request, exc: HTTPException):
+    """业务异常：保留原 status/detail 契约，补上 request_id。"""
+    rid = get_request_id(request)
+    log = logger.warning if exc.status_code >= 500 else logger.info
+    log('request.http_error', extra={
+        'request_id': rid, 'method': request.method, 'path': request.url.path,
+        'status': exc.status_code, 'detail': str(exc.detail),
+    })
+    return JSONResponse({'detail': exc.detail, 'request_id': rid},
+                        status_code=exc.status_code, headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    rid = get_request_id(request)
+    logger.info('request.validation_error', extra={
+        'request_id': rid, 'method': request.method, 'path': request.url.path,
+        'errors': len(exc.errors()),
+    })
+    return JSONResponse({'detail': jsonable_encoder(exc.errors()), 'request_id': rid},
+                        status_code=422, headers={REQUEST_ID_HEADER: rid})
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    """最后的兜底。ServerErrorMiddleware 位于 RequestIdMiddleware 外层，
+    它生成的响应不会经过我们的 send 包装，所以这里显式补 X-Request-ID 响应头。
+
+    注意：StreamingResponse 一旦开始推送，异常处理器已无法改写响应；
+    那条路径由中间件记录带 rid 的堆栈，并由 SSE error 事件把 rid 推给前端。
+    """
+    rid = get_request_id(request)
+    # 显式传 exc_info=exc：async handler 被调用时 except 块可能已退出，
+    # logger.exception() 依赖的 sys.exc_info() 未必还在。
+    logger.error('request.unhandled', exc_info=exc, extra={
+        'request_id': rid, 'method': request.method, 'path': request.url.path,
+        'error_type': type(exc).__name__,
+    })
+    return JSONResponse(
+        {'detail': '服务器内部错误，请稍后重试', 'request_id': rid},
+        status_code=500,
+        headers={REQUEST_ID_HEADER: rid},
+    )

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from collections import deque
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -12,11 +13,14 @@ from langgraph.types import Command
 
 from app.agent.graph import initial_input
 from app.agent.tools import _USER_ID
+from app.logging_config import REQUEST_ID
+from app.middleware import get_request_id
 from app.observability import langfuse_callbacks
 from app.schemas import ChatRequest, ResumeRequest
 from app.services.summary import is_summarizable
 
 router = APIRouter(prefix='/api', tags=['chat'])
+logger = logging.getLogger(__name__)
 
 # 模型生成期间的心跳文案（轮换，避免长时间"卡住"的观感）
 HEARTBEAT_TEXT = ['正在思考…', '正在分析账单…', '正在组织回答…']
@@ -183,17 +187,23 @@ def _sse(run_id, event):
 
 
 def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_steps=None,
-                 runtime=None, run_timeout=None, max_tool_calls=None, user_id=None):
+                 runtime=None, run_timeout=None, max_tool_calls=None, user_id=None,
+                 request_id=None):
     async def stream():
         # 工具层数据隔离的 ContextVar 必须在这里设置，而不是在端点里设置：
         # 端点里的 `finally: _USER_ID.reset()` 会在 stream() 真正开始迭代前就执行，
         # 导致 runner（asyncio.create_task 跑在独立上下文）读到 None，工具抛 NO_USER。
+        # request_id 同理：流式响应在独立 task 里跑，显式 set 保证整条流的所有日志
+        # （含 runner 子任务）都能自动带上本次请求的 rid。
         token = _USER_ID.set(user_id) if user_id is not None else None
+        rid_token = REQUEST_ID.set(request_id) if request_id else None
         try:
             yield_from = _stream_body()
             async for item in yield_from:
                 yield item
         finally:
+            if rid_token is not None:
+                REQUEST_ID.reset(rid_token)
             if token is not None:
                 _USER_ID.reset(token)
 
@@ -206,12 +216,18 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
             queue.put_nowait(_sse(run_id, {'type': 'stream', 'payload': {'delta': text}}))
 
         config = {'configurable': {'thread_id': run_id, 'stream_sink': stream_sink}}
-        # Langfuse 追踪：handler 放在 RunnableConfig 里，LangGraph 会自动沿调用链
-        # 下传给每个节点内的 LLM 与工具调用，不需要去 graph.py 逐节点埋点。
+        # Langfuse 追踪：每次请求新建 handler，把 request_id 作为 trace_id，
+        # LangGraph 会自动沿调用链下传给每个节点内的 LLM 与工具调用，无需逐节点埋点。
         # 未启用时是空列表，此时干脆不写这个键，避免给 langgraph 传空 callbacks。
-        callbacks = langfuse_callbacks()
+        callbacks = langfuse_callbacks(request_id)
         if callbacks:
             config['callbacks'] = callbacks
+        # 同一会话的多轮请求（含审批 resume）归到同一个 Langfuse session：
+        # trace_id 看「这一轮」，session_id 看「整个聊天窗口」。
+        session_meta = {'langfuse_session_id': run_id}
+        if user_id is not None:
+            session_meta['langfuse_user_id'] = f'u{user_id}'
+        config['metadata'] = session_meta
         # 步数护栏：langgraph 1.x 在运行时通过 config 传 recursion_limit，
         # 超限抛 GraphRecursionError（下方转友好 final），防止模型陷入工具循环停不下来
         if max_steps:
@@ -306,6 +322,9 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
                                     return
                     except GraphRecursionError:
                         # 步数护栏触发：模型反复调用工具停不下来 → 转成友好 final，不当作崩溃
+                        logger.warning('agent.recursion_limit', extra={
+                            'request_id': request_id, 'run_id': run_id,
+                        })
                         limit = max_steps if max_steps else '上限'
                         queue.put_nowait(_sse(run_id, {'type': 'final', 'payload': {
                             'text': f'这次任务执行的步骤超过了上限（{limit} 步），已安全停止。'
@@ -313,9 +332,16 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
                         }}))
                         return
                     except Exception as exc:
+                        # 流式响应已开始推送，全局异常处理器无法再改写 HTTP 响应：
+                        # 这里必须自己记完整堆栈，并把 rid 放进 error 事件让用户能报障。
+                        logger.exception('agent.run_failed', extra={
+                            'request_id': request_id, 'run_id': run_id,
+                            'error_type': type(exc).__name__,
+                        })
                         queue.put_nowait(_sse(run_id, {'type': 'error',
                                                        'payload': {'code': 'RUN_FAILED',
-                                                                   'error': str(exc)}}))
+                                                                   'error': str(exc),
+                                                                   'request_id': request_id}}))
                         return
                     if interrupt_info is None:
                         return  # 图自然跑到 END
@@ -344,6 +370,9 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
                     await run_segments()
             except TimeoutError:
                 # run 墙钟超时：已完成步骤已 checkpoint 落盘，推友好 final 而非崩溃
+                logger.warning('agent.run_timeout', extra={
+                    'request_id': request_id, 'run_id': run_id,
+                })
                 queue.put_nowait(_sse(run_id, {'type': 'final', 'payload': {
                     'text': f'这次任务执行超过了时间上限（{run_timeout} 秒），已安全停止；'
                             '已完成部分已保存，可继续追加提问或换个说法重试。',
@@ -382,6 +411,7 @@ async def chat(payload: ChatRequest, request: Request):
     循环 runner 在下个输入检查点把它注入并继续，无需重跑已完成步骤。
     多用户隔离：thread_id 前缀 user_id，且工具层经 _USER_ID 上下文按用户过滤数据。"""
     user_id = request.state.user_id
+    rid = get_request_id(request)
     # 会话/线程按用户隔离：即使不同用户碰巧用同一 session_id，checkpoint 与运行时也互不串扰
     raw_session = payload.session_id or uuid4().hex
     thread_id = f'u{user_id}:{raw_session}'
@@ -426,12 +456,14 @@ async def chat(payload: ChatRequest, request: Request):
                         seen_start=seen_start, runtime=rt, user_id=user_id,
                         max_steps=getattr(settings, 'max_steps', None),
                         run_timeout=getattr(settings, 'run_timeout_seconds', None),
-                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None))
+                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None),
+                        request_id=rid)
 
 
 @router.post('/runs/{run_id}/resume')
 async def resume(run_id: str, payload: ResumeRequest, request: Request):
     user_id = request.state.user_id
+    rid = get_request_id(request)
     # 审批 run 的 thread_id 由 chat 端点以 `u{user_id}:` 前缀生成，此处强制校验归属，
     # 防止用户 A 通过伪造 run_id 恢复/干扰用户 B 的挂起审批。
     expected_prefix = f'u{user_id}:'
@@ -475,4 +507,5 @@ async def resume(run_id: str, payload: ResumeRequest, request: Request):
                         seen_start=seen_start, runtime=rt, user_id=user_id,
                         max_steps=getattr(settings, 'max_steps', None),
                         run_timeout=getattr(settings, 'run_timeout_seconds', None),
-                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None))
+                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None),
+                        request_id=rid)

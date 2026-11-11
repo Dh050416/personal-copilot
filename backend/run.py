@@ -23,4 +23,6 @@ if sys.platform == 'win32':
     uvicorn_asyncio.asyncio_loop_factory = _selector_loop_factory
 
 if __name__ == '__main__':
-    uvicorn.run('app.main:app', host='127.0.0.1', port=8000, reload=True)
+    # log_config=None：不让 uvicorn 用默认 dictConfig 覆盖 app.main 装好的 JSON 日志
+    uvicorn.run('app.main:app', host='127.0.0.1', port=8000, reload=True,
+                log_config=None)
