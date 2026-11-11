@@ -7,12 +7,48 @@
 
 ### 新增
 
+- **稳定运行 + 可观测性（A + C 的一半）**：纯 ASGI 中间件生成 `request_id`（可透传网关的
+  `X-Request-ID`），写入 ContextVar / `request.state` / 响应头；结构化单行 JSON 日志；
+  `HTTPException` / `RequestValidationError` / `Exception` 三个全局异常处理器统一返回带 rid 的
+  JSON、内部堆栈只进日志；SSE `error` 事件与前端错误提示都带问题编号。
+  Langfuse 改为**每次请求新建** `CallbackHandler(trace_context={"trace_id": request_id})`，
+  并用 `langfuse_session_id = thread_id` 归组同会话多轮。凭证留空整体降级、零网络请求。
+  见 [ADR 0005](docs/adr/0005-request_id%20与%20Langfuse%20trace%20关联.md)，
+  测试见 `backend/tests/test_observability.py`。
+- **RAG 个人知识库三层闭环**：PG + pgvector（`Vector(1024)` / HNSW / 内容哈希去重 /
+  级联删除）→ 多格式解析（TXT/MD/Word/文字型 PDF）与结构感知分块（保留章节路径、页码）→
+  本地 `bge-m3` 向量化异步摄入（pending → ready / failed）→ `search_knowledge` 工具向量召回
+  → 片段回喂模型。前端新增「知识库」页（上传 / 粘贴 / 状态轮询 / 失败原因 / 删除）。
+  真实摄入需 `ollama pull bge-m3`；Excel 与 OCR 属二期。
+- **短期记忆：滑动窗口 + 递进摘要**：续轮保留最近 `HISTORY_WINDOW_SIZE=10` 条原始消息，
+  被挤出的普通文本消息增量合并进 `conversation_summaries` 并注入回 System；
+  工具调用 / 审批等结构化消息不参与摘要。长期记忆仍全量注入，并补齐「设置与记忆」管理页。
+- **存储层换成 PostgreSQL**：业务库、LangGraph checkpoint（`AsyncPostgresSaver`）、
+  知识库向量统一进 PG 16 + pgvector；引入 Alembic 管理 schema（含 `timestamptz` 时间戳迁移），
+  彻底移除 SQLite。工具结果缓存可选接 Redis，未配置时回退进程内缓存。
+- **账号体系与多用户隔离**：注册 / 登录 + HMAC 签名令牌（密钥可落盘持久化），
+  `user_id` 贯穿业务表、checkpoint `thread_id` 前缀、知识库文档与工具层 ContextVar。
+- **前端**：仿极简黑白风格重构（220px 分组侧栏、无阴影渐变）；补齐消费报表页与设置/记忆页；
+  新增知识库页与登录页。
+- **敏感词拦截接线**：`sensitive_terms` 在 intent 节点命中时走拒答路径，不再只是配置项。
+- **评估集扩到 43 条**；评估改用 PG 测试库（`PersonManager_test`）做用例隔离，不再用临时 SQLite 库。
+- **文档同步（2026-11-11）**：README / DEPLOY / CONTRIBUTING / SECURITY / `.env.example` /
+  `.env.production` / docs 全量对齐当前代码，修正过时的「无鉴权 / SQLite / 无迁移工具 /
+  占位页 / 敏感词未接线」等描述。
+
 - **评估集与指标报告**：33 条用例（8 类）+ 六项指标 + Markdown 报告。
   首轮实测 `deepseek-v4-flash`：通过率 93.9%、工具选择 94.4%、参数 89.6%、
   审批触达 100%、越权写操作 0。见 [docs/evals.md](docs/evals.md)。
 - 铁律新增第 6 条：写操作必须单独提交（一条响应里只放一个写操作调用），
   批量建卡用 `create_cards_from_query` 一次完成。修复了模型把「查询 + 建卡」
   并行提交、被 `PARALLEL_WRITE_BLOCKED` 拦下后不重试的问题。
+
+### 变更
+
+- 0.1.0 列出的若干已知限制现已解决：报表与记忆管理页已实现、`sensitive_terms` 已接线、
+  schema 变更走 Alembic、API 已有账号鉴权、checkpoint 落在 PG 而非 `checkpoints.db`。
+- `LOG_LEVEL` 控制结构化日志级别；本地启动改为 `python run.py`（Windows 事件循环兼容），
+  vite 需 `--host 127.0.0.1`。
 
 ### 修复
 
@@ -21,6 +57,12 @@
   中的写操作未经用户确认直接落库。现在确立不变量「并行调用只能全只读或仅含一个写工具」，
   混合批只执行第一个调用，其余以 `PARALLEL_WRITE_BLOCKED` 回执退回模型逐个重发。
   见 [ADR 0004](docs/adr/0004-并行工具调用按批校验.md)。
+- **跨域预检被鉴权拦成 401**：`AuthMiddleware` 位于 `CORSMiddleware` 外层，
+  OPTIONS 请求不带令牌时直接返回 401 且无 CORS 头，浏览器拒绝全部跨域请求。
+  现在 OPTIONS 直接放行给内层，前端 API 基址默认同源（`/api` 由 vite 代理），
+  从源头消除预检失败。
+- **Langfuse 单例 handler 导致并发 trace 串台**：改为每次请求新建 handler 并绑定
+  `trace_id = request_id`（见 ADR 0005）。
 
 ## [0.1.0] - 2026-10-19
 

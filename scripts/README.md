@@ -37,3 +37,7 @@ Supervisor 端到端验收：走完「查询 → 建卡 → 审批 → 完成」
 cd backend
 PYTHONPATH=. python ../scripts/e2e_supervisor.py
 ```
+
+> 本目录**没有**备份脚本。数据已全部迁到 PostgreSQL，备份请用 `pg_dump`
+> （命令见 [`DEPLOY.md`](../DEPLOY.md)「日常运维」与「数据备份与恢复」），
+> 早期文档里的 `scripts/backup.py` 与 `*.db` 备份方式已废弃。

@@ -7,8 +7,13 @@
 - **方案一：Docker + 阿里云服务器**（推荐，稳定、开机即用、朋友 24h 可访问）
 - **方案二：内网穿透**（轻量，无需买服务器，但你电脑要一直开机）
 
-> 前提：你已能在本机正常跑通（后端 `uvicorn` + 前端 `npm run dev`）。
+> 前提：你已能在本机正常跑通（后端 `python run.py` + 前端 `npm run dev`）。
 > 模型默认走云端 DeepSeek（`backend/.env` 已配），因此**朋友无需装 Ollama、无需 GPU**。
+>
+> **存储前置（容易漏）**：后端依赖 **PostgreSQL 16 + pgvector**（业务库、checkpoint、
+> 知识库向量都在里面）和可选的 Redis。当前 `docker-compose.yml` **只编排 backend + frontend 两个服务**，
+> 没有带 PG/Redis——上线前必须另外准备，并让 backend 容器能通过容器内网地址访问。
+> 连接串写容器名（如 `postgres`），不要写 `127.0.0.1`（那是容器内自己）。
 
 ---
 
@@ -19,9 +24,11 @@
 ```
 朋友浏览器 ──HTTPS──> 阿里云 ECS（80/443 端口）
                         ├─ frontend 容器（nginx）：托管静态页面 + 反代 /api
-                        └─ backend 容器（FastAPI uvicorn :8000，仅内网可达）
-                              └─ DeepSeek 云模型
-                              └─ copilot_data 数据卷（账单 + 对话历史持久化）
+                        ├─ backend 容器（FastAPI uvicorn :8000，仅内网可达）
+                        │     ├─ DeepSeek 云模型
+                        │     └─ JSON 结构化日志（docker logs 采集，按 request_id 检索）
+                        ├─ PostgreSQL + pgvector（业务表 / checkpoint / 知识库向量，持久化卷）
+                        └─ Redis（可选：只读工具结果缓存，留空则回退进程内缓存）
 ```
 
 ### 第 1 步：买阿里云服务器
@@ -78,17 +85,25 @@ cp .env.production .env
 vim .env   # 填 MODEL_API_KEY（AUTH_SECRET 可留空自动生成）
 ```
 
-关键项：
+关键项（完整清单见 [`.env.production`](.env.production) 模板）：
 
 | 变量 | 说明 |
 |---|---|
 | `MODEL_API_KEY` | 你的 DeepSeek Key（从本地 `backend/.env` 抄） |
 | `MODEL_NAME` | `deepseek-v4-flash`（与你本地一致） |
 | `ALLOW_CLOUD_MODEL` | `true`（云端模型必开） |
+| `DATABASE_URL` | **必填**，`postgresql+asyncpg://<user>:<pw>@postgres:5432/<db>`，主机写 PG 容器名 |
+| `CHECKPOINT_URL` | **必填**，`postgresql://<user>:<pw>@postgres:5432/<db>`（psycopg 方言，与业务库同库不同表） |
+| `REDIS_URL` | 可选，`redis://redis:6379/0`；留空则工具缓存退化成进程内内存缓存 |
+| `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL_NAME` | 知识库向量化。云端部署时本地 Ollama 不可用，需指向可达的 embedding 服务，否则上传文档会失败 |
+| `LANGFUSE_*` | 可选。配了就会把 trace（含模型输入输出）发到 `LANGFUSE_HOST`，不想外传请全部留空 |
+| `LOG_LEVEL` | 可选，默认 `INFO`；结构化 JSON 日志级别 |
 | `AUTH_SECRET` | 登录令牌签名密钥（可选；留空则首次启动自动生成并持久化） |
 
-> 鉴权已改为**账号密码体系**：朋友打开页面会先看到注册/登录页，各自注册账号即可使用，
+> 鉴权是**账号密码体系**：朋友打开页面会先看到注册/登录页，各自注册账号即可使用，
 > 数据按账号自动隔离，**无需再分发密令**。
+> 首次启动前必须执行 `alembic upgrade head`（Dockerfile 的 CMD 已自动执行），
+> 它会建表、`vector` 扩展与 HNSW 索引。
 
 ### 第 5 步：构建并启动
 
@@ -112,19 +127,34 @@ curl http://127.0.0.1/health   # 或直接浏览器打开 http://<公网IP>/
 ### 日常运维
 
 ```bash
-docker compose logs -f              # 看日志
+docker compose logs -f backend       # 结构化 JSON 日志（每条带 request_id）
 docker compose restart              # 重启
 docker compose up -d --build        # 更新代码后重建
 docker compose down                 # 停止（数据卷保留，不丢数据）
 ```
 
-**数据备份**：数据存在 Docker 卷 `copilot_data` 里，可用：
+**排障**：页面报错时会显示「问题编号」，那就是本次请求的 `request_id`。
+拿它过滤日志即可看到这次请求的完整链路（含异常堆栈）：
+
 ```bash
-# 备份（把卷导出到宿主机）
-docker run --rm -v copilot_data:/data -v $(pwd):/backup alpine tar czf /backup/copilot_data.tar.gz -C /data .
-# 或直接进 backend 容器跑项目自带的备份脚本
-docker compose exec backend python scripts/backup.py
+docker compose logs backend | grep '<request_id>'
 ```
+
+日志固定字段为 `ts / level / logger / event / request_id`，访问日志另有
+`method / path / status / duration_ms`。如果配了 Langfuse，同一个 id 也是 trace_id，
+可在 Langfuse 里直接打开对应 trace。
+
+**数据备份**：业务数据、checkpoint、知识库向量都在 **PostgreSQL**，不在 `copilot_data`
+卷里（该卷现在只放 `auth_secret` 等少量本地状态）。用 `pg_dump`：
+
+```bash
+docker compose exec postgres pg_dump -U postgres -d PersonManager \
+  | gzip > backup_$(date +%F).sql.gz
+```
+
+> 注意：这里的 `postgres` 服务需要你自己加进 compose（当前模板未编排 PG）。
+> 若 PG 是外部实例，直接在宿主机对那个实例执行 `pg_dump` 即可。
+> Redis 只存可失效的工具结果缓存，无需备份。
 
 ### 可选：绑定域名 + HTTPS
 
@@ -142,9 +172,11 @@ docker compose exec backend python scripts/backup.py
 朋友浏览器 ──HTTPS──> 内网穿透服务（cpolar/frp/Cloudflare Tunnel）
                           │
                           └──> 你本机
-                               ├─ 前端（静态文件，由穿透服务暴露）
-                               └─ 后端（uvicorn :8000，带访问令牌鉴权）
-                                     └─ DeepSeek 云模型（账单数据会上云）
+                               ├─ 前端（dist/ 静态文件，由穿透服务暴露）
+                               ├─ 后端（uvicorn :8000，账号密码鉴权）
+                               │     └─ DeepSeek 云模型（账单数据会上云）
+                               ├─ PostgreSQL + pgvector（本地 Docker 容器）
+                               └─ Redis（可选，本地 Docker 容器）
 ```
 
 关键点：
@@ -179,13 +211,21 @@ CORS_ORIGINS=["https://xxxx.cpolar.cn","http://127.0.0.1:5173","http://localhost
 
 ## 三、第二步：启动前后端（生产模式，非 dev）
 
-后端（在 `backend/` 目录，用项目根 venv）：
+后端（在 `backend/` 目录，用 **backend 自己的 venv**）：
 
 ```bash
 cd D:/LifeManage/backend
-D:/LifeManage/.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-# 去掉 --reload（生产不要热重载）；--host 127.0.0.1 表示只本机监听，由穿透服务转发
+alembic upgrade head
+D:/LifeManage/backend/.venv/Scripts/python.exe run.py
 ```
+
+> **不要**直接 `python -m uvicorn app.main:app`：Windows 的 ProactorEventLoop 与
+> checkpoint 用的 psycopg 异步模式不兼容，`run.py` 专门把它切到 SelectorEventLoop。
+> `run.py` 当前带 `reload=True`（开发友好）；长期常驻建议复制一份把 `reload` 改为 `False`，
+> 再用 nssm / 任务计划注册成服务。`--host` 固定 `127.0.0.1`，只本机监听、由穿透服务转发。
+>
+> 启动前确认 PG（5432）与 Redis（6379，若配置）容器已运行，`.env` 里连接串写
+> `127.0.0.1` 而**不是** `localhost`（Windows 下后者优先解析到 IPv6，会连不上）。
 
 前端（在 `frontend/` 目录，构建静态产物并用简单静态服务托管）：
 
@@ -244,22 +284,28 @@ cloudflared tunnel --url http://127.0.0.1:8000   # 后端
 
 ## 六、数据备份与恢复
 
-账单/卡片/记忆都在 `backend/data/personal_copilot.db`（很小，几 MB）。
-对话历史在 `backend/data/checkpoints.db`（会随对话快速增长，可能数百 MB）。
+数据已全部迁到 **PostgreSQL**：账单 / 卡片 / 日程 / 长期记忆 / 对话摘要 /
+知识库文本块与向量 / LangGraph checkpoint 都在 `PersonManager` 库里。
+`backend/data/` 现在只放 `auth_secret` 等少量本地状态；Redis 是缓存，无需备份。
 
-**备份（在 `backend/` 目录）**：
+> 旧版本文档提到的 `scripts/backup.py` 与 `*.db` 备份方式**已随 SQLite 迁移一并移除**，
+> 仓库里不再有这个脚本，别照旧命令执行。
+
+**备份**（PG 跑在 Docker 容器 `postgres` 里时）：
 
 ```bash
-D:/LifeManage/.venv/Scripts/python.exe scripts/backup.py            # 只备份核心数据（推荐）
-D:/LifeManage/.venv/Scripts/python.exe scripts/backup.py --with-ckpt # 连对话历史一起
+docker exec postgres pg_dump -U postgres -d PersonManager \
+  > backup_$(date +%F).sql
+# 或压缩
+docker exec postgres pg_dump -U postgres -d PersonManager | gzip > backup_$(date +%F).sql.gz
 ```
 
-产出在 `backend/data/backups/`，文件名带时间戳。
+**恢复**：停止后端 → 建一个空库 → `psql -U postgres -d PersonManager < backup.sql`
+→ 确认 `vector` 扩展存在 → 重启后端。schema 变更由 Alembic 管理，
+恢复旧库后若版本落后，执行 `alembic upgrade head` 补齐。
 
-**恢复**：停止后端 → 用备份文件覆盖 `backend/data/personal_copilot.db` → 重启。
-
-> 建议养成习惯：每次大版本改动前、或朋友开始大量用之前，跑一次备份。
-> 也可以把备份脚本挂个定时任务（Windows 任务计划程序）每天自动跑。
+> checkpoint 表会随对话持续增长且没有 TTL，备份前可按需单独清理，但删掉会丢对话历史。
+> 建议每次大版本改动前、或朋友开始大量使用之前跑一次备份。
 
 ---
 
@@ -275,10 +321,14 @@ D:/LifeManage/.venv/Scripts/python.exe scripts/backup.py --with-ckpt # 连对话
 
 - [ ] `AUTH_SECRET` 已配置（或接受自动生成；建议生产固定一个强随机值）
 - [ ] `CORS_ORIGINS` 已包含穿透后的前端域名
+- [ ] PostgreSQL + pgvector 已就绪、`alembic upgrade head` 已执行、`DATABASE_URL` / `CHECKPOINT_URL` 指向正确的库
+- [ ] PG 密码不是默认的 `123456`，且 5432 / 6379 **没有**放行到公网
 - [ ] 后端 `--host 127.0.0.1`（只本机监听，不直接 `0.0.0.0`）
-- [ ] 备份脚本已跑过一次，`backend/data/backups/` 有产物
+- [ ] `LANGFUSE_*` 若配置，已确认 trace 外传可接受；否则全部留空
+- [ ] `pg_dump` 备份已跑过一次，产物能正常恢复
+- [ ] 日志目录 / `docker logs` 的访问权限已限制（异常堆栈可能带工具参数）
 - [ ] 已告知朋友「账单数据会上云」
-- [ ] 电脑不休眠、后端常驻（可用 `nssm` 或任务计划把 uvicorn 注册成服务）
+- [ ] 电脑不休眠、后端常驻（可用 `nssm` 或任务计划把 `run.py` 注册成服务）
 
 ---
 
@@ -289,7 +339,19 @@ A：登录态失效（令牌被清、或后端 `AUTH_SECRET` 变了导致旧令�
 
 **Q：跨域报错（CORS）？**
 A：把朋友实际访问的前端域名加进后端 `CORS_ORIGINS`，重启后端。
+OPTIONS 预检已被鉴权中间件放行，不需要额外处理。
 
-**Q：checkpoints.db 太大了怎么办？**
-A：它只存对话历史，不影响账单数据。可删（会丢失对话历史），或备份后清理。
-后续可加 TTL 自动清理策略（见 README「已知限制」）。
+**Q：页面报「运行失败」，只有一串问题编号，怎么查？**
+A：那就是 `request_id`。在 `docker compose logs backend`（或本机 stdout）里
+`grep` 这个 id，能拿到该次请求的完整结构化日志与异常堆栈；
+配了 Langfuse 的话，同 id 也是 trace_id，可直接打开对应 trace。
+
+**Q：checkpoint 表太大了怎么办？**
+A：它们在 PostgreSQL 的 `checkpoints` / `checkpoint_blobs` / `checkpoint_writes` 表里，
+只存对话历史与工具参数，不影响账单数据。目前没有 TTL / 自动清理策略，
+可以先 `pg_dump` 备份，再按需清理旧 thread（会丢失对应对话历史）。
+注意滑动窗口只裁剪喂给模型的内容，**不会**删库里的历史。
+
+**Q：后端起不来，日志里是 asyncpg / psycopg 报错？**
+A：多半是 PG 没启动，或连接串写了 `localhost`（Windows 优先解析 IPv6 ::1）
+导致连不上 Docker 只映射的 IPv4。统一改 `127.0.0.1`；Windows 还必须用 `run.py` 启动。

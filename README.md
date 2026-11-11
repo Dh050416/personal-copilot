@@ -11,9 +11,11 @@
 - LangGraph 如何暂停、持久化、恢复；
 - 工具结果如何经过输出 schema 校验；
 - 幂等键如何防止重复确认造成重复写入；
-- Excel 导入、数据库事务、SSE 事件和运行审计怎样互相配合。
+- Excel 导入、数据库事务、SSE 事件和运行审计怎样互相配合；
+- 上下文如何在滑动窗口 + 递进摘要、长期记忆、知识库检索之间分配；
+- 一次请求如何通过 `request_id` 把结构化日志与 Langfuse trace 串成一条线。
 
-> **它不是什么**：不是一个账本产品，没有预算分析、多账本、同步或移动端。
+> **它不是什么**：不是一个账本产品，没有完整的预算规划、多账本、同步或移动端。
 > 如果你想要一个能用的记账应用，这里不合适；如果你想知道「一个会写数据库的 Agent
 > 到底要加多少道护栏才算负责任」，这里就是为这个建的。
 
@@ -54,26 +56,33 @@
 ```
 backend/app/
   agent/     graph.py   Supervisor 图、领域子图、节点工厂、上下文卫生
-             tools.py   工具层：契约、权限、幂等、输出校验
+             tools.py   工具层：契约、权限、幂等、输出校验（含 search_knowledge）
   api/       chat.py    SSE 事件、审批恢复、运行审计
-             bills.py / cards.py / events.py
-  data/      db.py / models.py / views.py
+             bills.py / cards.py / events.py / memory.py / reports.py
+             knowledge.py   知识库上传/粘贴/列表/详情/删除
+  data/      db.py / models.py / views.py（models 含 KnowledgeChunk / ConversationSummary）
   services/  importer.py（Excel 解析，确定性，不调 LLM）
              classification.py（规则 + 真实 LLM 分类）
-             bill_service.py / card_service.py / schedule_service.py
+             summary.py（递进摘要）  bill_service / card_service / schedule_service
+  services/knowledge/  parsers（TXT/MD/Word/PDF）、chunking（结构感知分块）、
+                       embedding（本地 bge-m3）、ingest（摄入状态机）、retrieval（向量召回）
   config.py  配置与隐私边界校验    schemas.py  输入输出契约
-  errors.py  结构化错误             main.py     应用装配
+  errors.py  结构化错误             main.py     应用装配与全局异常兜底
+  auth.py    账号鉴权中间件         middleware.py  request_id 生成与访问日志
+  logging_config.py  结构化 JSON 日志   observability.py  Langfuse trace 关联
 
 frontend/src/
   views/       ChatView / BoardView / BillsView / CalendarView
-               （ReportsView、SettingsView 目前是占位页）
-  components/  ChatPanel / TaskBoard / BillTable / ApprovalCard / SessionList / ImportPanel
+               ReportsView / SettingsView / KnowledgeView / LoginView
+  components/  AppHeader（220px 侧栏）/ ChatPanel / TaskBoard / BillTable / ApprovalCard
+               SessionList / ImportPanel
   stores/      session.ts   事件流统一分发
-  services/    agentClient.ts   SSE 解析与 API
+  services/    agentClient.ts   SSE 解析与 API（含知识库接口）
   tools/       registry.ts      工具结果按注册表提取，新增工具不改主流程
 
+backend/alembic/  迁移版本（PG + pgvector + 知识库表 + 摘要表）
 scripts/     gen_sample_bills.py（生成脱敏示例账单）、E2E 与基准脚本
-docs/        adr/（架构决策记录）、archive/（已废弃的旧架构文档）
+docs/        adr/（架构决策记录）、evals.md、tool-closure.md、archive/（已废弃旧架构）
 ```
 
 ---
@@ -84,11 +93,16 @@ docs/        adr/（架构决策记录）、archive/（已废弃的旧架构文�
 
 - **Python 3.12+**（代码用了 `asyncio.timeout`，最低 3.11）
 - **Node 20+**
-- 一个 OpenAI 兼容的模型服务。默认用本地 Ollama：
+- **PostgreSQL 16 + pgvector 扩展**（业务库、checkpoint、知识库向量都在同一个 PG 实例）。
+  本机用 Docker 最简单：`docker run -d --name postgres -e POSTGRES_PASSWORD=123456 \
+  -p 5432:5432 pgvector/pgvector:pg16`，再建 `PersonManager` 与 `PersonManager_test` 两个库。
+- **Redis（可选）**：不配 `REDIS_URL` 时工具结果缓存退化成进程内内存缓存，单实例够用。
+- 一个 OpenAI 兼容的**对话模型**服务（默认本地 Ollama），以及一个 **embedding 模型**
+  （知识库用，默认本地 `bge-m3`，1024 维）：
 
 ```bash
-# 安装 Ollama 后拉取默认模型
-ollama pull qwen3:8b
+ollama pull qwen3:8b      # 对话模型，也可在 .env 改指向 DeepSeek
+ollama pull bge-m3        # 知识库向量化，真实文档摄入的必需前置
 ```
 
 ### 启动
@@ -99,20 +113,22 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env               # 按需修改模型配置
-# 首次运行需先建表（PostgreSQL + Alembic）：
+cp .env.example .env               # 按需修改模型、PG/Redis、Langfuse 配置
+# 确保 PG/Redis 容器已启动，且连接串写 127.0.0.1（Windows 下 localhost 会解析到 IPv6）
+# 首次运行需先建表（Alembic 会一并建 pgvector 扩展与 HNSW 索引）：
 alembic upgrade head
 # 启动（Windows 本地开发用 run.py，它会规避 psycopg 的 ProactorEventLoop 限制；
 #       生产 Docker/Linux 直接 uvicorn app.main:app 即可）
 python run.py
 
-# 前端（另一个终端）
+# 前端（另一个终端；vite 默认绑 IPv6，需显式指定 host）
 cd frontend
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1
 ```
 
-打开 http://127.0.0.1:5173 ，后端健康检查 http://127.0.0.1:8000/health 。
+打开 http://127.0.0.1:5173 ，先注册账号再登录（数据按 `user_id` 隔离）。
+后端健康检查 http://127.0.0.1:8000/health 。
 
 也可以直接用仓库自带的示例账单（无需准备自己的数据）：
 
@@ -175,6 +191,65 @@ python scripts/gen_sample_bills.py     # 生成 samples/sample_bills.xlsx
 
 专项测试见 `backend/tests/test_context_hygiene.py`。
 
+## 上下文管理
+
+「模型每轮看到什么」由三部分组成，来源与生命周期彼此独立：
+
+| 层 | 存哪 | 怎么进上下文 |
+| --- | --- | --- |
+| 短期记忆 | PG checkpoint 的 `state.messages`（`AsyncPostgresSaver`，4 张表） | 续轮滑动窗口保留最近 `HISTORY_WINDOW_SIZE=10` 条；被挤出的**普通文本消息**增量合并进 `conversation_summaries` 的递进摘要，注入回 System。工具调用、审批等结构化消息不参与摘要，避免破坏恢复语义 |
+| 长期记忆 | `agent_memory` 表（按 `user_id` 隔离） | 每轮**全量**拼进 system。规模只有 10–30 条，全量比检索更可靠；前端「设置与记忆」页可查看/新增/删除 |
+| 知识库 | `knowledge_chunks`（pgvector） | 模型按需调 `search_knowledge` 工具召回，不常驻（见下一节） |
+
+标识粒度别混：`session_id` / `thread_id`（`u{user_id}:{session_id}`）是**会话级**，
+checkpoint、滑动窗口、摘要都按它存；`run_id` 其实也是它；一次 HTTP 请求则用
+`request_id`（见「稳定运行与可观测性」）。项目目前**没有**按轮次回溯原始消息的消息表——
+被窗口挤出后只剩摘要，完整历史只在前端 localStorage。
+
+专项测试见 `backend/tests/test_summary.py`、`test_memory.py`。
+
+## RAG 个人知识库
+
+三层已经闭环，从上传到模型回答全链路可跑：
+
+| 层 | 实现 | 说明 |
+| --- | --- | --- |
+| 数据层 | `knowledge_documents` + `knowledge_chunks` | `Vector(1024)`、HNSW 余弦索引、`content_hash` SHA-256 去重、`ON DELETE CASCADE`；Alembic 迁移自动建 `vector` 扩展 |
+| 在线摄入 | `services/knowledge/` | TXT / MD / Word / 文字型 PDF → 保留章节路径与页码的结构感知分块（400 字 / 50 字 overlap）→ 本地 `bge-m3` 批量向量化 → 入库。走 `BackgroundTasks` 异步，`pending → ready / failed`，失败清脏块 |
+| 线上检索 | `search_knowledge` 工具 | query 向量化 → pgvector cosine top-k → 阈值 0.5 过滤 → `user_id` 隔离 → 片段带 `heading_path`/`page` 回喂模型。`CORE_RULES` 第 7 条要求文档相关问题先检索，检索为空如实告知、不得编造 |
+
+前端「知识库」页支持文件上传与粘贴文本两种入口、pending 状态轮询、失败原因展示与删除确认。
+REST 端点在 `/api/knowledge/documents*`，专项测试见
+`backend/tests/test_parsers.py`、`test_chunking.py`、`test_ingest.py`、`test_retrieval.py`。
+
+> **前置条件**：真实摄入必须本机装 Ollama 并 `ollama pull bge-m3`。单测用 mock embedding 覆盖逻辑，
+> 没有它也能跑测试，但上传文档会失败。Excel 与照片/扫描件（OCR）尚未支持，属二期。
+
+## 稳定运行与可观测性
+
+这块回答的是「出错了能不能兜住、能不能定位」：
+
+- **全局兜底（A）**：`main.py` 注册 `HTTPException` / `RequestValidationError` / `Exception`
+  三个处理器，统一返回带 `request_id` 的 JSON，内部错误细节只进日志、不回前端。
+  SSE 流已开始推送后异常处理器改不了响应，改由中间件记录带 rid 的堆栈，
+  并在 `error` 事件里把 `request_id` 推给前端（页面会显示「问题编号」）。
+- **request_id**：纯 ASGI 中间件在入口生成（或校验并透传网关的 `X-Request-ID`），
+  写入 `ContextVar`、`scope['state']` 和响应头 `X-Request-ID`。OPTIONS 预检、鉴权 401
+  这些到不了端点的请求也带得上。
+- **结构化日志**：`LOG_LEVEL`（默认 INFO）控制，单行 JSON，固定
+  `ts / level / logger / event / request_id`，外加自定义字段与异常堆栈；
+  访问日志额外带 `method / path / status / duration_ms`。uvicorn 的日志也统一走这个格式。
+- **Langfuse 关联（C）**：每次请求**新建** `CallbackHandler(trace_context={"trace_id": request_id})`
+  ——复用单例会让并发请求的 span 串到同一条 trace。再用
+  `config.metadata.langfuse_session_id = thread_id` 把同一会话的多轮请求（含审批 resume）归组。
+  凭证留空时追踪整体关闭，零网络请求、不影响主流程。
+
+排障姿势：用户报一个 `request_id`，`grep` 日志即可拿到这次请求的完整链路，
+在 Langfuse 里也能直接打开同 id 的 trace。专项测试见 `backend/tests/test_observability.py`。
+
+> 尚未实现：告警 / 健康检查异常「早发现」（B），以及按轮次回溯原始消息的消息表。
+> 设计取舍见 [ADR 0005](docs/adr/0005-request_id%20与%20Langfuse%20trace%20关联.md)。
+
 ## 幂等与重试安全
 
 写工具自动重试的前提是**请求级幂等键**（同一操作意图的所有执行共用同一键，服务端查重/重放）：
@@ -210,7 +285,7 @@ python scripts/gen_sample_bills.py     # 生成 samples/sample_bills.xlsx
 
 ## 评估
 
-33 条用例覆盖查询 / 建卡 / 日程 / 看板 / 搜索 / 记忆 / 拒答 / 多轮八类，
+43 条用例覆盖查询 / 建卡 / 日程 / 看板 / 搜索 / 记忆 / 拒答 / 多轮八类，
 走**生产同一条图链路**（真实工具 + 真实审批 + 真实拦截）跑模型。
 
 ```bash
@@ -221,6 +296,9 @@ python -m evals --json-out results.json   # 跨版本比对的机器可读结果
 ```
 
 ### 最新一次结果
+
+> 下表是数据集扩到 43 条**之前**的历史跑批（33 条 × 3 轮），仅作基线参考；
+> 当前 `evals/dataset.py` 有 43 条用例，需重新跑批才能与历史数字对比。
 
 `deepseek-v4-flash`，33 条 × 3 轮 = 99 次执行（`--repeat 3`，完整报告见
 [`backend/evals/results/latest.md`](backend/evals/results/latest.md)）：
@@ -275,30 +353,37 @@ python -m evals --json-out results.json   # 跨版本比对的机器可读结果
 
 诚实清单，也是欢迎贡献的方向：
 
-- **消费报表页与设置/记忆管理页仍是占位**。后端的 `save_memory` 工具是完整的，
-  但没有任何管理界面——用户无法查看或删除已记住的偏好。
-- **`sensitive_terms` 已定义但未接线**。`config.py` 里有敏感词（密码、验证码、转账等），
-  但目前没有任何环节会拦截命中这些词的请求。
-- **checkpoint 数据库无清理策略**，`backend/data/checkpoints.db` 会随使用持续增长
-  （内含完整对话历史与工具调用参数，未加密）。
-- **数据库无迁移工具**，schema 变更靠 `ALTER TABLE` 手工兼容旧库。
-- 无鉴权，API 默认监听本机，请勿直接暴露到公网。
-- 日程/搜索两个领域子图目前能力较薄（各 4 个工具），账单域最完整。
+- **checkpoint 无清理 / TTL 策略**：对话历史与工具调用参数存在 PG 的 4 张 checkpoint 表里，
+  未加密、不会自动清理。滑动窗口只裁剪喂给模型的内容，**不删**库里的历史。
+- **没有按轮次回溯的消息表**：被窗口挤出的原始消息只剩递进摘要，完整历史只在前端
+  localStorage，后端无法回放「第 N 轮的原话」。
+- **告警与异常早发现（B）尚未实现**：现在只能靠 `request_id` 事后定位，没有主动告警。
+- **RAG 覆盖不完整**：暂不支持 Excel 与照片 / 扫描件 OCR；没有 query 重写、重排与单文档上限
+  （量级小，向量召回够用）；真实摄入依赖本机 Ollama `bge-m3`。
+- **知识库异步摄入是进程内 `BackgroundTasks`**：多 worker 部署不共享队列，需换 Redis/Celery 队列。
+- **日程 / 搜索两个领域子图能力较薄**（各 4 个工具），账单域与知识库最完整。
+- **CI 需要 PG 服务**：`.github/workflows/ci.yml` 直接跑 `pytest`，但 runner 未编排
+  PostgreSQL + pgvector，需补 service 才能让测试在 CI 上通过。
 
 ---
 
 ## 文档
 
-- [`docs/adr/`](docs/adr/) — 架构决策记录：为什么用 `ContextVar` 传幂等键、为什么子图内不设输入检查点
+- [`docs/adr/`](docs/adr/) — 架构决策记录：幂等键用 ContextVar、子图内不设输入检查点、提示词分层、并行工具按批校验、request_id 与 Langfuse 关联
 - [`docs/tool-closure.md`](docs/tool-closure.md) — `query_bill` 与 `create_tracking_card` 的调用闭环与错误契约
+- [`docs/evals.md`](docs/evals.md) — 评估指标口径与结果怎么读
 - [`docs/archive/`](docs/archive/) — **已废弃**的旧架构文档（四层 HybridPlanner），仅供历史参考
+- [`DEPLOY.md`](DEPLOY.md) — Docker / 内网穿透部署与运维
 - [`SECURITY.md`](SECURITY.md) — 安全边界与已知限制
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发环境、测试与代码风格
+- [`CHANGELOG.md`](CHANGELOG.md) — 版本变更记录
 
 ## 参考
 
 - LangGraph interrupts: https://docs.langchain.com/oss/python/langgraph/interrupts
-- LangGraph SQLite checkpoint: https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint-sqlite
+- LangGraph PostgreSQL checkpoint: https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint-postgres
+- pgvector: https://github.com/pgvector/pgvector
+- Langfuse: https://langfuse.com/docs
 - LangChain Deep Agents: https://github.com/langchain-ai/deepagents
 - ByteDance DeerFlow: https://github.com/bytedance/deer-flow
 

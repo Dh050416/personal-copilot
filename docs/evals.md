@@ -44,8 +44,10 @@ python -m evals --json-out evals/results/2026-10-30.json
 
 产物：`evals/results/latest.md`（人看）+ 可选 JSON（`--json-out`，用来 diff 两个版本的差异）。
 
-每条用例用**独立的临时 SQLite 库**跑，用完即删，不会碰真实账单库；
-每条用例的 thread_id 独立，互不污染。
+每条用例用**测试专用 PostgreSQL 库**（`TEST_DATABASE_URL`，默认 `PersonManager_test`）跑，
+harness 在开头 `drop_all` + `create_all` 重建全部表，不会碰开发库 / 生产库；
+每条用例的 thread_id 独立，互不污染。该库需提前启用 `vector` 扩展。
+用 `NullPool` 连接，避免 asyncpg 连接跨事件循环复用报错。
 
 ## 指标口径
 
@@ -105,9 +107,10 @@ python -m evals --json-out evals/results/2026-10-30.json
 
 ## 当前状态
 
-- 用例：33 条，覆盖 query / create / schedule / board / search / memory / refuse / multi 八类。
+- 用例：当前 `evals/dataset.py` 有 **43 条**，覆盖 query / create / schedule / board /
+  search / memory / refuse / multi 八类。
 - 基建：`pytest tests/test_evals.py`（21 条）离线验证指标算法与执行链路。
-- 最近一次实测（`deepseek-v4-flash`，33 条 × 3 轮 = 99 次执行）：
+- 最近一次实测（**历史基线**，数据集扩到 43 条之前：`deepseek-v4-flash`，33 条 × 3 轮 = 99 次执行）：
   通过率 93.9%、工具选择 94.4%、参数 89.6%、审批触达 100%、**越权写操作 0**。
   完整报告见 [`backend/evals/results/latest.md`](../backend/evals/results/latest.md)。
 - 已知弱项：`board` 66.7%（说「把第 3 张卡标记完成」时有时只查询不动手）、
