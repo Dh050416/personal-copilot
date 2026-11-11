@@ -281,6 +281,9 @@ export const useSessionStore = defineStore("session", () => {
     try {
       await api.resume(pending.runId, pending.approvalId, decision, pushEvent)
     } catch (error) {
+      // 恢复失败（含审批过期 410）时把卡片放回来，用户可改点「拒绝」放弃该操作；
+      // 否则卡片已消失，会话会一直停在后端的审批挂起状态。
+      approval.value = pending
       answer.value = `审批恢复失败：${String(error)}`
     } finally {
       busy.value = false

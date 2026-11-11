@@ -47,6 +47,24 @@ def _thread_runtime(app_state, thread_id: str) -> dict:
     return rt[thread_id]
 
 
+def _release_runtime_lock(rt: dict, reason: str, *, request_id=None, thread_id=None) -> None:
+    """异常/拒绝路径释放 thread 锁，避免会话永久假忙。
+
+    active 只在 runner() 的 finally 里复位（chat.py 下方），而 runner 位于
+    StreamingResponse 的生成器内部：端点在置位之后、SSE 流被迭代之前抛任何异常，
+    那段 finally 都不会执行，锁就永久泄漏——此后该会话所有消息只进 pending 队列。
+    本函数补上这段窗口的复位；幂等，正常结束时 runner 会再复位一次，无副作用。
+
+    注意只清 active / waiting_approval，不动 pending：排队的用户消息仍需在下一轮合并。
+    """
+    if rt.get('active') or rt.get('waiting_approval'):
+        logger.warning('runtime.lock_released', extra={
+            'request_id': request_id, 'thread_id': thread_id, 'reason': reason,
+        })
+    rt['active'] = False
+    rt['waiting_approval'] = False
+
+
 def _repair_pairs(msgs):
     """工具调用配对修复：丢弃孤立的 ToolMessage 与未配对完整的 AI(tool_calls)，
     保证发给模型的每条 tool 消息都有前置 tool_calls、每个 tool_calls 都有对应响应。"""
@@ -425,39 +443,46 @@ async def chat(payload: ChatRequest, request: Request):
     rt['active'] = True
     rt['waiting_approval'] = False
     rt['tool_calls'] = 0  # 新 run 重置工具调用计数（审批续跑在 resume 端点保留，累计同一任务成本）
-    config = {'configurable': {'thread_id': thread_id}}
-    snapshot = await graph.aget_state(config)
-    seen_start = 0
-    if snapshot.values.get('messages'):
-        # 续轮：显式携带历史（AgentState.messages 无 add_messages reducer，输入会整体替换而非追加）
-        # 滑动窗口 + 递进摘要：窗口内保留最近 N 条，更早的文本消息压入摘要注入 system
-        summary_manager = getattr(request.app.state, 'summary_manager', None)
-        window_size = getattr(getattr(request.app.state, 'settings', None),
-                              'history_window_size', None)
-        history = await _trim_history_with_summary(
-            snapshot.values['messages'], thread_id, user_id, summary_manager, window_size)
-        messages = [*history, HumanMessage(content=payload.message)]
-        seen_start = len(snapshot.values.get('events', []))
-    else:
-        messages = initial_input(thread_id, payload.message)['messages']
-    # 合并上一轮 END 竞态残留的排队输入（时序上晚于最后一个输入检查点到达的消息）
-    leftovers = list(rt['pending'])
-    rt['pending'].clear()
-    for text in leftovers:
-        messages.append(HumanMessage(content=text))
-    # 新一轮用户提问 = 新任务：必须把工具调用计数归零。
-    # tool_calls_done 是 AgentState 的持久字段（写在 checkpoint 里，子图计数也会回写主图），
-    # 不重置会让「每次 run 上限 N 次」的护栏退化成「每个会话终身 N 次」：
-    # 触顶后 agent 节点在调用模型前就返回上限提示，之后每一轮都立刻被拦，会话永久失效。
-    # 审批 resume 端点刻意不重置：同一任务跨审批续跑仍累计成本（见 /runs/{id}/resume）。
-    graph_input = {'messages': messages, 'tool_calls_done': 0}
-    settings = getattr(request.app.state, 'settings', None)
-    return stream_graph(graph, graph_input, thread_id, request.app.state.checkpointer,
-                        seen_start=seen_start, runtime=rt, user_id=user_id,
-                        max_steps=getattr(settings, 'max_steps', None),
-                        run_timeout=getattr(settings, 'run_timeout_seconds', None),
-                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None),
-                        request_id=rid)
+    # 置位后到 SSE 流启动前有一段 await 窗口（读 checkpoint、查摘要）。这里的任何异常
+    # 都会让 runner() 的 finally 无法执行，必须自己释放锁，否则该 thread 永久假忙。
+    # 用 BaseException 是为了连客户端断连的 CancelledError 也覆盖，然后原样抛出。
+    try:
+        config = {'configurable': {'thread_id': thread_id}}
+        snapshot = await graph.aget_state(config)
+        seen_start = 0
+        if snapshot.values.get('messages'):
+            # 续轮：显式携带历史（AgentState.messages 无 add_messages reducer，输入会整体替换而非追加）
+            # 滑动窗口 + 递进摘要：窗口内保留最近 N 条，更早的文本消息压入摘要注入 system
+            summary_manager = getattr(request.app.state, 'summary_manager', None)
+            window_size = getattr(getattr(request.app.state, 'settings', None),
+                                  'history_window_size', None)
+            history = await _trim_history_with_summary(
+                snapshot.values['messages'], thread_id, user_id, summary_manager, window_size)
+            messages = [*history, HumanMessage(content=payload.message)]
+            seen_start = len(snapshot.values.get('events', []))
+        else:
+            messages = initial_input(thread_id, payload.message)['messages']
+        # 合并上一轮 END 竞态残留的排队输入（时序上晚于最后一个输入检查点到达的消息）
+        leftovers = list(rt['pending'])
+        rt['pending'].clear()
+        for text in leftovers:
+            messages.append(HumanMessage(content=text))
+        # 新一轮用户提问 = 新任务：必须把工具调用计数归零。
+        # tool_calls_done 是 AgentState 的持久字段（写在 checkpoint 里，子图计数也会回写主图），
+        # 不重置会让「每次 run 上限 N 次」的护栏退化成「每个会话终身 N 次」：
+        # 触顶后 agent 节点在调用模型前就返回上限提示，之后每一轮都立刻被拦，会话永久失效。
+        # 审批 resume 端点刻意不重置：同一任务跨审批续跑仍累计成本（见 /runs/{id}/resume）。
+        graph_input = {'messages': messages, 'tool_calls_done': 0}
+        settings = getattr(request.app.state, 'settings', None)
+        return stream_graph(graph, graph_input, thread_id, request.app.state.checkpointer,
+                            seen_start=seen_start, runtime=rt, user_id=user_id,
+                            max_steps=getattr(settings, 'max_steps', None),
+                            run_timeout=getattr(settings, 'run_timeout_seconds', None),
+                            max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None),
+                            request_id=rid)
+    except BaseException:  # noqa: BLE001 - 释放锁后必须原样抛出，不能吞异常
+        _release_runtime_lock(rt, 'chat_setup_failed', request_id=rid, thread_id=thread_id)
+        raise
 
 
 @router.post('/runs/{run_id}/resume')
@@ -471,8 +496,16 @@ async def resume(run_id: str, payload: ResumeRequest, request: Request):
         raise HTTPException(404, '运行不存在')
     graph = request.app.state.graph
     config = {'configurable': {'thread_id': run_id}}
-    snapshot = await graph.aget_state(config)
+    try:
+        snapshot = await graph.aget_state(config)
+    except BaseException:  # noqa: BLE001 - 读 checkpoint 失败也要释放审批锁
+        _release_runtime_lock(_thread_runtime(request.app.state, run_id),
+                              'resume_read_failed', request_id=rid, thread_id=run_id)
+        raise
     if not snapshot.values:
+        # 运行已不存在：没有 resume 会来接管，锁必须在这里释放
+        _release_runtime_lock(_thread_runtime(request.app.state, run_id),
+                              'resume_run_missing', request_id=rid, thread_id=run_id)
         raise HTTPException(404, '运行不存在')
     pending = False
     created_at = None
@@ -483,6 +516,8 @@ async def resume(run_id: str, payload: ResumeRequest, request: Request):
                 pending = True
                 created_at = value.get('created_at')
     if not pending:
+        # 刻意不解锁：可能是 approval_id 传错，运行仍在等待另一个审批，
+        # 解锁会让新 /chat 撞上 checkpoint 里未决的 interrupt，用户也无法用正确 id 重试。
         raise HTTPException(409, '运行未等待此审批')
     settings = getattr(request.app.state, 'settings', None)
     # 审批 TTL：审批创建后超过 approval_ttl_seconds 未处理视为过期，拒绝恢复并提示重新发起
@@ -493,7 +528,17 @@ async def resume(run_id: str, payload: ResumeRequest, request: Request):
         except (ValueError, TypeError):
             age = 0
         if age > ttl:
-            raise HTTPException(410, f'审批已过期（超过 {ttl} 秒），请重新发起该操作')
+            # 过期审批绝不允许 approve（防止延迟执行写操作）。但允许 reject 放行：
+            # 让 graph 走完挂起节点，由 runner 的 finally 正常复位 active。
+            # 不能只在 410 时释放 runtime 锁——checkpoint 里的 interrupt 仍在，
+            # 下一条 /chat 会立刻撞上未决 interrupt 重抛 __interrupt__，模型根本不执行，
+            # 变成「解锁了却仍用不了」的假恢复（已用最小 LangGraph 图实测）。
+            if payload.decision != 'reject':
+                raise HTTPException(
+                    410, f'审批已过期（超过 {ttl} 秒）：请点「拒绝」放弃该操作，或新建会话')
+            logger.info('runtime.expired_approval_rejected', extra={
+                'request_id': rid, 'thread_id': run_id,
+            })
     decision = {'decision': payload.decision, 'approval_id': payload.approval_id}
     if payload.edited_args is not None:
         decision['edited_args'] = payload.edited_args
@@ -503,9 +548,14 @@ async def resume(run_id: str, payload: ResumeRequest, request: Request):
     rt['active'] = True
     rt['waiting_approval'] = False
     # 注意：不重置 rt['tool_calls']——审批续跑与同一任务累计成本，工具调用次数护栏跨段生效
-    return stream_graph(graph, Command(resume=decision), run_id, request.app.state.checkpointer,
-                        seen_start=seen_start, runtime=rt, user_id=user_id,
-                        max_steps=getattr(settings, 'max_steps', None),
-                        run_timeout=getattr(settings, 'run_timeout_seconds', None),
-                        max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None),
-                        request_id=rid)
+    try:
+        return stream_graph(graph, Command(resume=decision), run_id,
+                            request.app.state.checkpointer,
+                            seen_start=seen_start, runtime=rt, user_id=user_id,
+                            max_steps=getattr(settings, 'max_steps', None),
+                            run_timeout=getattr(settings, 'run_timeout_seconds', None),
+                            max_tool_calls=getattr(settings, 'max_tool_calls_per_run', None),
+                            request_id=rid)
+    except BaseException:  # noqa: BLE001 - 同上，置位后流启动前的窗口
+        _release_runtime_lock(rt, 'resume_setup_failed', request_id=rid, thread_id=run_id)
+        raise
