@@ -5,6 +5,7 @@ import BillsView from "../views/BillsView.vue"
 import ReportsView from "../views/ReportsView.vue"
 import CalendarView from "../views/CalendarView.vue"
 import SettingsView from "../views/SettingsView.vue"
+import KnowledgeView from "../views/KnowledgeView.vue"
 import LoginView from "../views/LoginView.vue"
 import { isLoggedIn } from "../services/agentClient"
 
@@ -17,6 +18,7 @@ const router = createRouter({
     { path: "/bills", name: "bills", component: BillsView },
     { path: "/reports", name: "reports", component: ReportsView },
     { path: "/calendar", name: "calendar", component: CalendarView },
+    { path: "/knowledge", name: "knowledge", component: KnowledgeView },
     { path: "/settings", name: "settings", component: SettingsView },
   ],
 })

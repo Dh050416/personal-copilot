@@ -7,15 +7,12 @@
 import type { AgentEvent } from "../tools/types"
 
 /**
- * 后端地址。默认直连本机 8000；部署到其他地址时设置 VITE_API_BASE。
- * 设为 **空字符串** 表示与前端同源，此时由 vite.config.ts 的 /api 代理转发
- * （适合容器部署或只想暴露一个端口的场景）。
- * 非空时前端直接请求该地址，后端需把该地址加入 CORS_ORIGINS。
+ * 后端地址。默认与前端同源（空字符串），由 vite.config.ts 的 /api 代理转发到
+ * 127.0.0.1:8000 —— 避免跨域预检被后端鉴权拦截，也无需额外配置。
+ * 需要直连其他后端（跨域部署）时设置 VITE_API_BASE 为完整地址，
+ * 并把该地址加入后端 CORS_ORIGINS。
  */
-export const API_BASE: string = (import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000").replace(
-  /\/$/,
-  "",
-)
+export const API_BASE: string = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "")
 
 /** 用户令牌（localStorage 持久化）。登录成功后由后端签发，所有请求经 Bearer 携带。 */
 const TOKEN_KEY = "copilot_access_token"
@@ -455,4 +452,81 @@ export async function getReportSummary(params: {
   const response = await authedFetch(url)
   if (!response.ok) throw new Error(`报表查询失败（HTTP ${response.status}）`)
   return (await response.json()) as ReportSummary
+}
+
+/* ===== 知识库（RAG）===== */
+
+/** 知识库文档元数据（列表/详情/轮询状态用）。status: pending | ready | failed */
+export interface KnowledgeDocumentItem {
+  id: number
+  title: string
+  source_type: string // file | paste
+  filename: string | null
+  file_size: number | null
+  status: string
+  error_message: string | null
+  chunk_count: number
+  created_at: string
+  updated_at: string
+}
+
+/** 摄入受理结果（异步摄入，立即返回 pending） */
+export interface IngestResponse {
+  doc_id: number
+  status: string
+}
+
+/** 列出知识库文档（按创建时间倒序） */
+export async function listKnowledgeDocuments(): Promise<KnowledgeDocumentItem[]> {
+  const response = await authedFetch(`${API_BASE}/api/knowledge/documents`)
+  if (!response.ok) throw new Error(`文档列表查询失败（HTTP ${response.status}）`)
+  const data = (await response.json()) as { items: KnowledgeDocumentItem[] }
+  return data.items
+}
+
+/** 单个文档详情（轮询摄入状态用） */
+export async function getKnowledgeDocument(docId: number): Promise<KnowledgeDocumentItem> {
+  const response = await authedFetch(`${API_BASE}/api/knowledge/documents/${docId}`)
+  if (!response.ok) throw new Error(`文档查询失败（HTTP ${response.status}）`)
+  return (await response.json()) as KnowledgeDocumentItem
+}
+
+/** 上传文件摄入（txt/md/docx/pdf），立即返回 pending，后台异步向量化 */
+export async function uploadKnowledgeFile(file: File, title?: string): Promise<IngestResponse> {
+  const body = new FormData()
+  body.append("file", file)
+  if (title) body.append("title", title)
+  const response = await authedFetch(`${API_BASE}/api/knowledge/documents/upload`, {
+    method: "POST",
+    body,
+  })
+  const data = (await response.json()) as unknown
+  if (!response.ok) {
+    const detail = (data as { detail?: string })?.detail
+    throw new Error(detail || "文件上传失败")
+  }
+  return data as IngestResponse
+}
+
+/** 粘贴文本摄入，立即返回 pending，后台异步向量化 */
+export async function ingestKnowledgeText(title: string, text: string): Promise<IngestResponse> {
+  const response = await postJson("/api/knowledge/documents/text", { title, text })
+  const data = (await response.json()) as unknown
+  if (!response.ok) {
+    const detail = (data as { detail?: string })?.detail
+    throw new Error(detail || "文本入库失败")
+  }
+  return data as IngestResponse
+}
+
+/** 删除文档（块级联删除，真删不可恢复） */
+export async function deleteKnowledgeDocument(docId: number): Promise<void> {
+  const response = await authedFetch(`${API_BASE}/api/knowledge/documents/${docId}`, {
+    method: "DELETE",
+  })
+  if (!response.ok) {
+    const data = (await response.json()) as unknown
+    const detail = (data as { detail?: string })?.detail
+    throw new Error(detail || "文档删除失败")
+  }
 }

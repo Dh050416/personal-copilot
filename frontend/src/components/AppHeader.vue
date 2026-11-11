@@ -27,6 +27,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/bills", label: "账单", icon: "bills" },
       { to: "/reports", label: "报表", icon: "reports" },
+      { to: "/knowledge", label: "知识库", icon: "knowledge" },
     ],
   },
   {
@@ -44,6 +45,7 @@ const ICONS: Record<string, string> = {
   reports: '<path d="M4 20V10M10 20V4M16 20v-8"/><path d="M3 20h18"/>',
   calendar: '<rect x="4" y="6" width="16" height="14" rx="2"/><path d="M4 10h16M8 4v4M16 4v4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
+  knowledge: '<path d="M4 4h6l2 2h8v12H4z"/><path d="M8 12h8M8 16h5"/>',
 }
 
 // 用户名首字母做头像
