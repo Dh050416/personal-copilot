@@ -20,6 +20,21 @@ class Base(DeclarativeBase):
     pass
 
 
+class AgentInput(Base):
+    __tablename__ = 'agent_inputs'
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(32), unique=True)
+    thread_id: Mapped[str] = mapped_column(Text, index=True)
+    content: Mapped[str] = mapped_column(Text)
+
+
+class AgentDecision(Base):
+    __tablename__ = 'agent_decisions'
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    approval_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    decision: Mapped[str] = mapped_column(Text)
+
+
 class User(Base):
     """用户账号：每个用户一个独立的生活管家（数据按 user_id 隔离）。"""
     __tablename__ = 'users'

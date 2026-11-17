@@ -109,6 +109,8 @@ async def lifespan(app: FastAPI):
                        sensitive_terms=settings.sensitive_terms)
     app.state.settings = settings
     app.state.db = db
+    from app.services.coordination import Coordinator
+    app.state.coordinator = Coordinator(db)
     app.state.auth_secret = auth_secret
     app.state.checkpointer = checkpointer
     app.state.graph = graph
