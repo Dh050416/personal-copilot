@@ -31,9 +31,10 @@ async def create_event(db, user_id, args, idempotency_key: str | None = None) ->
                 location=args.location, note=args.note,
                 invocation_id=idempotency_key or uuid4().hex,
             )
-            session.add(event)
             try:
-                await session.flush()
+                async with session.begin_nested():
+                    session.add(event)
+                    await session.flush()
             except IntegrityError:
                 existing = await session.scalar(
                     select(ScheduleEvent).where(

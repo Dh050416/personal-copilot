@@ -30,6 +30,8 @@ import ApprovalCard from "../components/ApprovalCard.vue"
 }
 
 .col-chat {
+  /* 审批卡以 absolute 浮在面板内，必须给它一个定位参照 */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 16px;

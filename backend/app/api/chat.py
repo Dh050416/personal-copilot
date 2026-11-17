@@ -22,6 +22,116 @@ from app.services.summary import is_summarizable
 router = APIRouter(prefix='/api', tags=['chat'])
 logger = logging.getLogger(__name__)
 
+
+def _interrupt_values(snapshot):
+    return [inter.value for task in snapshot.tasks for inter in task.interrupts
+            if isinstance(inter.value, dict)]
+
+
+async def _shared_stream(request, thread_id, lease, graph_input, seen_start):
+    from app.services.coordination import coordinated_response
+    settings = request.app.state.settings
+    response = stream_graph(
+        request.app.state.graph, graph_input, thread_id, request.app.state.checkpointer,
+        seen_start=seen_start,
+        runtime={'coordinator': request.app.state.coordinator},
+        user_id=request.state.user_id, request_id=get_request_id(request),
+        max_steps=settings.max_steps, run_timeout=settings.run_timeout_seconds,
+        max_tool_calls=settings.max_tool_calls_per_run)
+    return await coordinated_response(response, lease)
+
+
+async def _shared_chat(payload, request):
+    coordinator = request.app.state.coordinator
+    thread_id = f'u{request.state.user_id}:{payload.session_id or uuid4().hex}'
+    # Persist before trying the lock: busy requests and process crashes cannot lose accepted input.
+    await coordinator.enqueue(thread_id, payload.message)
+    lease = await coordinator.acquire(thread_id)
+    if lease is None:
+        return {'queued': True, 'message': '已保存，将在当前任务的下一个检查点追加。'}
+    try:
+        graph = request.app.state.graph
+        config = {'configurable': {'thread_id': thread_id}}
+        snapshot = await graph.aget_state(config)
+        if any(v.get('kind') == 'tool_approval' for v in _interrupt_values(snapshot)):
+            await lease.close()
+            return {'queued': True, 'message': '已保存，审批恢复后追加。'}
+        # An interrupted/crashed run must finish before new input replaces its state.
+        if snapshot.next:
+            interrupts = _interrupt_values(snapshot)
+            graph_input = (Command(resume={'new_input': None})
+                           if any(v.get('kind') == 'input_checkpoint' for v in interrupts) else None)
+        else:
+            applied = list(snapshot.values.get('applied_input_ids', []))
+            pending = await coordinator.pending(thread_id, applied)
+            if snapshot.values.get('messages'):
+                history = await _trim_history_with_summary(
+                    snapshot.values['messages'], thread_id, request.state.user_id,
+                    request.app.state.summary_manager, request.app.state.settings.history_window_size)
+            else:
+                history = initial_input(thread_id, pending[0][1])['messages'][:-1]
+            graph_input = {
+                'messages': [*history, *(HumanMessage(content=content) for _, content in pending)],
+                'applied_input_ids': [*applied, *(mid for mid, _ in pending)],
+                'tool_calls_done': 0,
+            }
+        return await _shared_stream(request, thread_id, lease, graph_input,
+                                    len(snapshot.values.get('events', [])))
+    except BaseException:
+        await lease.close()
+        raise
+
+
+async def _shared_resume(run_id, payload, request):
+    if not run_id.startswith(f'u{request.state.user_id}:'):
+        raise HTTPException(404, '运行不存在')
+    coordinator = request.app.state.coordinator
+    lease = await coordinator.acquire(run_id)
+    if lease is None:
+        raise HTTPException(409, '该会话正在执行，请稍后重试')
+    try:
+        graph = request.app.state.graph
+        snapshot = await graph.aget_state({'configurable': {'thread_id': run_id}})
+        if not snapshot.values:
+            raise HTTPException(404, '运行不存在')
+        decision = {'decision': payload.decision, 'approval_id': payload.approval_id}
+        if payload.edited_args is not None:
+            decision['edited_args'] = payload.edited_args
+        matching = [v for v in _interrupt_values(snapshot)
+                    if v.get('approval_id') == payload.approval_id]
+        if not matching:
+            # Only a previously accepted, identical decision can recover a post-resume crash.
+            async with coordinator.db.engine.connect() as conn:
+                from sqlalchemy import text
+                saved = await conn.scalar(text('SELECT decision FROM agent_decisions '
+                                               'WHERE thread_id=:thread AND approval_id=:approval'),
+                                          {'thread': run_id, 'approval': payload.approval_id})
+            if saved is None:
+                raise HTTPException(409, '运行未等待此审批')
+            await coordinator.decision(run_id, payload.approval_id, decision)
+            if not snapshot.next:
+                await lease.close()
+                return {'completed': True, 'run_id': run_id}
+            # A different approval may now be pending; never consume it with this decision.
+            if any(v.get('kind') == 'tool_approval' for v in _interrupt_values(snapshot)):
+                raise HTTPException(409, '该审批已处理，运行正在等待新的审批')
+            graph_input = (Command(resume={'new_input': None})
+                           if _interrupt_values(snapshot) else None)
+        else:
+            ttl = request.app.state.settings.approval_ttl_seconds
+            created = matching[0].get('created_at')
+            if ttl and created and payload.decision != 'reject':
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(created)).total_seconds()
+                if age > ttl:
+                    raise HTTPException(410, '审批已过期，请拒绝该操作或新建会话')
+            await coordinator.decision(run_id, payload.approval_id, decision)
+            graph_input = Command(resume=decision)
+        return await _shared_stream(request, run_id, lease, graph_input,
+                                    len(snapshot.values.get('events', [])))
+    except BaseException:
+        await lease.close()
+        raise
+
 # 模型生成期间的心跳文案（轮换，避免长时间"卡住"的观感）
 HEARTBEAT_TEXT = ['正在思考…', '正在分析账单…', '正在组织回答…']
 
@@ -376,9 +486,16 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
                     # input_checkpoint：消费追加输入队列，逐轮注入（Codex 风格执行中追加）
                     loop_count += 1
                     new_input = None
+                    message_id = None
+                    coordinator = runtime.get('coordinator') if runtime else None
+                    if coordinator is not None:
+                        snapshot = await graph.aget_state(config)
+                        pending = await coordinator.pending(run_id, snapshot.values.get('applied_input_ids', []))
+                        if pending:
+                            message_id, new_input = pending[0]
                     if runtime is not None and runtime.get('pending'):
                         new_input = runtime['pending'].popleft()
-                    current_input = Command(resume={'new_input': new_input})
+                    current_input = Command(resume={'new_input': new_input, 'message_id': message_id})
 
             try:
                 if run_timeout:
@@ -416,6 +533,10 @@ def stream_graph(graph, graph_input, run_id, checkpointer, seen_start=0, max_ste
             await hb_task
             if not runner_task.done():
                 runner_task.cancel()
+            try:
+                await runner_task
+            except asyncio.CancelledError:
+                pass
         yield 'data: [DONE]\n\n'
 
     return StreamingResponse(stream(), media_type='text/event-stream')
@@ -428,6 +549,8 @@ async def chat(payload: ChatRequest, request: Request):
     执行中追加（检查点注入）：thread 正忙时新消息进入 pending 队列，返回 {queued:true}；
     循环 runner 在下个输入检查点把它注入并继续，无需重跑已完成步骤。
     多用户隔离：thread_id 前缀 user_id，且工具层经 _USER_ID 上下文按用户过滤数据。"""
+    if getattr(request.app.state, 'coordinator', None) is not None:
+        return await _shared_chat(payload, request)
     user_id = request.state.user_id
     rid = get_request_id(request)
     # 会话/线程按用户隔离：即使不同用户碰巧用同一 session_id，checkpoint 与运行时也互不串扰
@@ -487,6 +610,8 @@ async def chat(payload: ChatRequest, request: Request):
 
 @router.post('/runs/{run_id}/resume')
 async def resume(run_id: str, payload: ResumeRequest, request: Request):
+    if getattr(request.app.state, 'coordinator', None) is not None:
+        return await _shared_resume(run_id, payload, request)
     user_id = request.state.user_id
     rid = get_request_id(request)
     # 审批 run 的 thread_id 由 chat 端点以 `u{user_id}:` 前缀生成，此处强制校验归属，

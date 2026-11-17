@@ -191,6 +191,7 @@ def build_system_message(skills: list[str], memory_text: str | None = None) -> s
 
 
 class AgentState(TypedDict, total=False):
+    applied_input_ids: list[str]  # durable inbox deduplication; retained across turns
     messages: list[Any]
     events: list[dict[str, Any]]
     final: str
@@ -903,9 +904,15 @@ def make_graph(model, tools, write_tools, checkpointer=None, memory_loader=None,
         无输入 → 放行（有工具结果待处理回原领域，否则 END）。"""
         decision = interrupt({'kind': 'input_checkpoint'})
         if isinstance(decision, dict) and decision.get('new_input'):
+            message_id = decision.get('message_id')
+            applied = list(state.get('applied_input_ids', []))
+            if message_id and message_id in applied:
+                return {'has_pending': False}
             messages = list(state['messages'])
             messages.append(HumanMessage(content=decision['new_input']))
-            return {'messages': messages, 'has_pending': True}
+            if message_id:
+                applied.append(message_id)
+            return {'messages': messages, 'has_pending': True, 'applied_input_ids': applied}
         return {'has_pending': False}
 
     def route_after_check(state):

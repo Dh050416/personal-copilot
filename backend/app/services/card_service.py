@@ -51,9 +51,10 @@ async def create_card(db, user_id, args, idempotency_key: str | None = None) -> 
                 lane=getattr(args, 'lane', None),
                 invocation_id=idempotency_key or uuid4().hex,
             )
-            session.add(card)
             try:
-                await session.flush()
+                async with session.begin_nested():
+                    session.add(card)
+                    await session.flush()
             except IntegrityError:
                 # 并发同键：另一请求已建卡，重查返回首次结果
                 existing = await session.scalar(

@@ -52,6 +52,12 @@
 
 ### 变更
 
+- **HITL 审批卡改版**：`ApprovalCard.vue` 从「聊天面板底部挤压布局的普通卡片」改为
+  「面板内居中浮起的确认弹层」（`ChatView.vue` 的 `.col-chat` 加 `position: relative`），
+  轻量遮罩只覆盖聊天面板且不拦截点击，聊天历史与输入框仍可操作。UI 收回极简黑白：
+  去掉黄底/琥珀徽标/绿红按钮，改用盾形线框图标 + 顶部黑色强调线 + 键值参数表
+  （常见字段中文名、`direction` 等枚举值翻译，可切换查看原始 JSON）+ 近黑主按钮。
+  补入场动画、`prefers-reduced-motion`、`role="dialog"` 与窄屏响应式。审批逻辑未改动。
 - 0.1.0 列出的若干已知限制现已解决：报表与记忆管理页已实现、`sensitive_terms` 已接线、
   schema 变更走 Alembic、API 已有账号鉴权、checkpoint 落在 PG 而非 `checkpoints.db`。
 - `LOG_LEVEL` 控制结构化日志级别；本地启动改为 `python run.py`（Windows 事件循环兼容），
