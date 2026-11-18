@@ -2,7 +2,7 @@
 import asyncio
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.data.models import KnowledgeDocument
 from app.services.knowledge.ingest import ingest_document
@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 async def run_ingestion_worker(db, client, chunk_size, chunk_overlap):
     while True:
         try:
+            async with db.engine.begin() as conn:
+                await conn.execute(update(KnowledgeDocument).where(
+                    KnowledgeDocument.status == 'pending', KnowledgeDocument.source_bytes.is_(None)
+                ).values(status='failed', error_message='缺少持久化源文件，请重新上传原文件'))
             async with db.sessions() as session:
                 ids = list(await session.scalars(select(KnowledgeDocument.id).where(
                     KnowledgeDocument.status == 'pending',

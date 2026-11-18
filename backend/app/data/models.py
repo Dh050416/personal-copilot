@@ -158,7 +158,7 @@ class ConversationSummary(Base):
 class KnowledgeDocument(Base):
     """RAG 知识库文档元数据：一次上传/粘贴对应一条记录。
 
-    - 原始文件不落库，只保留解析后的文本块（见 KnowledgeChunk）。
+    - 原始文件持久化为 source_bytes，支持重启恢复与重新摄入。
     - content_hash（SHA-256）做内容级去重：同一用户重复上传同一内容直接拒绝，
       跨用户互不影响（联合唯一约束含 user_id）。
     - status 跟踪摄入状态：pending（切块/向量化中）→ ready / failed；

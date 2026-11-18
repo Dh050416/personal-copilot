@@ -97,12 +97,20 @@ def chunk_paragraphs(paras: list[ParsedParagraph], chunk_size: int = 400,
                 buf = ''
             path, page = para.heading_path, para.page
             if para.kind == 'code':
-                # Keep code intact; embedding input limits are enforced by the provider.
-                chunks.append(Chunk(content=para.text, heading_path=path, page=page,
-                                    chunk_index=len(chunks)))
+                # Prefer complete code, but bound oversized blocks rather than failing embedding.
+                emit(para.text, path, page)
             else:
                 rows = para.text.splitlines()
                 header = rows[0] if rows else ''
+                if len(header) >= chunk_size or any(
+                        len(header) + len(row) + 1 > chunk_size for row in rows[1:]):
+                    # Oversized rows cannot preserve a full header within this budget.
+                    # Explicitly label continuation fragments instead of silently exceeding it.
+                    prefix = '[表格片段]\n'
+                    for piece in split_text(para.text, max(1, chunk_size - len(prefix)), 0):
+                        chunks.append(Chunk(content=prefix + piece, heading_path=path,
+                                            page=page, chunk_index=len(chunks)))
+                    continue
                 current = header
                 for row in rows[1:]:
                     if len(current) + len(row) + 1 > chunk_size and current != header:

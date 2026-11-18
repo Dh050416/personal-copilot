@@ -1,12 +1,4 @@
-"""RAG 知识库文档管理 REST 端点（第二层：在线摄入）。
-
-摄入是「异步」的：上传/粘贴后立即返回 doc_id + status=pending，
-切块 + 向量化 + 入库由 BackgroundTasks 在后台执行，前端轮询
-GET /api/knowledge/documents/{id} 直到 status 变 ready / failed。
-
-为什么异步：向量化可能很慢（大文档几十块逐批 embedding），同步会撑爆 HTTP 超时。
-个人单实例用 FastAPI 自带 BackgroundTasks 即可，不引入 Celery/Redis 队列。
-"""
+"""知识库管理：源文件与 pending 状态原子落库，数据库轮询 Worker 负责摄入。"""
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from sqlalchemy import select
 
@@ -92,6 +84,27 @@ async def retry_document(doc_id: int, request: Request):
             doc.status = 'pending'
             doc.error_message = None
     return IngestResponse(doc_id=doc_id, status='pending')
+
+
+@router.post('/documents/{doc_id}/rebuild', response_model=IngestResponse, status_code=202)
+async def rebuild_document(doc_id: int, request: Request):
+    from app.services.coordination import Coordinator
+    lease = await Coordinator(request.app.state.db).acquire(f'knowledge-ingest:{doc_id}')
+    if lease is None:
+        raise HTTPException(409, '文档正在处理中')
+    try:
+        async with request.app.state.db.sessions() as session:
+            async with session.begin():
+                doc = await session.get(KnowledgeDocument, doc_id, with_for_update=True)
+                if doc is None or doc.user_id != request.state.user_id:
+                    raise HTTPException(404, '文档不存在')
+                if doc.source_bytes is None:
+                    raise HTTPException(409, '请重新上传原文件以补齐源数据')
+                doc.status = 'pending'
+                doc.error_message = None
+        return IngestResponse(doc_id=doc_id, status='pending')
+    finally:
+        await lease.close()
 
 
 @router.get('/documents', response_model=KnowledgeDocumentList)

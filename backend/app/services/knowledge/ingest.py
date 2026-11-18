@@ -44,8 +44,15 @@ async def create_pending_document(db, user_id: int, title: str, source_type: str
         existing = await session.scalar(
             select(KnowledgeDocument).where(
                 KnowledgeDocument.user_id == user_id,
-                KnowledgeDocument.content_hash == content_hash))
+                KnowledgeDocument.content_hash == content_hash).with_for_update())
         if existing is not None:
+            if existing.source_bytes is None and source_bytes is not None:
+                existing.source_bytes = source_bytes
+                existing.filename = filename
+                existing.status = 'pending'
+                existing.error_message = None
+                await session.commit()
+                return existing
             raise DuplicateDocumentError(existing.id)
         doc = KnowledgeDocument(
             user_id=user_id, title=title, source_type=source_type, filename=filename,
