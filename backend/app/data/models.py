@@ -169,6 +169,7 @@ class KnowledgeDocument(Base):
     source_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     pipeline_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ingest_owner: Mapped[str | None] = mapped_column(String(32), nullable=True)
     __table_args__ = (UniqueConstraint('user_id', 'content_hash'),)
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)

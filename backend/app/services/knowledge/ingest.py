@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import asyncio
+from uuid import uuid4
+from contextlib import suppress
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -80,19 +82,47 @@ async def ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
     lease = await Coordinator(db).acquire(f'knowledge-ingest:{doc_id}')
     if lease is None:
         return
+    watcher = None
+    owner = uuid4().hex
     try:
         async with db.sessions() as session:
-            doc = await session.get(KnowledgeDocument, doc_id)
+            doc = await session.get(KnowledgeDocument, doc_id, with_for_update=True)
             if doc is None or doc.status == 'ready':
                 return
-        await _ingest_document(db, doc_id, filename, file_bytes, embed_client, chunk_size, chunk_overlap)
+            doc.ingest_owner = owner
+            await session.commit()
+        execution = asyncio.create_task(_ingest_document(
+            db, doc_id, filename, file_bytes, embed_client, chunk_size, chunk_overlap, owner))
+        lost = asyncio.Event()
+
+        async def monitor():
+            try:
+                while True:
+                    await asyncio.sleep(1)
+                    await lease.check()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                lost.set()
+                execution.cancel()
+
+        watcher = asyncio.create_task(monitor())
+        try:
+            await execution
+        except asyncio.CancelledError:
+            if not lost.is_set():
+                raise
     finally:
+        if watcher is not None:
+            watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher
         await lease.close()
 
 
 async def _ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
                            embed_client: EmbeddingClient, chunk_size: int,
-                           chunk_overlap: int) -> None:
+                           chunk_overlap: int, owner: str) -> None:
     """后台摄入主流程：解析 → 分块 → 向量化 → 入库。任何失败都标记 failed 并清理脏块。"""
     try:
         # --- 耗时操作（事务外，不持有数据库连接）---
@@ -111,8 +141,8 @@ async def _ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
         # --- 入库（单事务：清旧块 + 批量插新块 + 置 ready）---
         async with db.sessions() as session:
             async with session.begin():
-                doc = await session.get(KnowledgeDocument, doc_id)
-                if doc is None:
+                doc = await session.get(KnowledgeDocument, doc_id, with_for_update=True)
+                if doc is None or doc.ingest_owner != owner or doc.status != 'pending':
                     return
                 await session.execute(
                     delete(KnowledgeChunk).where(KnowledgeChunk.document_id == doc_id))
@@ -127,20 +157,22 @@ async def _ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
                 doc.status = 'ready'
                 doc.chunk_count = len(chunks)
                 doc.error_message = None
-                doc.embedding_model = embed_client.model_name
+                doc.embedding_model = embed_client.fingerprint
                 doc.pipeline_version = 'structured-v3'
                 doc.updated_at = now_utc()
     except Exception as exc:  # noqa: BLE001 —— 摄入失败必须兜底，绝不让后台任务静默崩溃
-        await _mark_failed(db, doc_id, str(exc))
+        await _mark_failed(db, doc_id, str(exc), owner)
 
 
-async def _mark_failed(db, doc_id: int, error_message: str) -> None:
+async def _mark_failed(db, doc_id: int, error_message: str, owner: str) -> None:
     """失败收尾：删除已写入的块（避免脏数据）+ 标记 failed。"""
     async with db.sessions() as session:
         async with session.begin():
+            doc = await session.get(KnowledgeDocument, doc_id, with_for_update=True)
+            if doc is None or doc.ingest_owner != owner or doc.status != 'pending':
+                return
             await session.execute(
                 delete(KnowledgeChunk).where(KnowledgeChunk.document_id == doc_id))
-            doc = await session.get(KnowledgeDocument, doc_id)
             if doc is not None:
                 doc.status = 'failed'
                 doc.error_message = error_message[:1000]

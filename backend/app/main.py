@@ -94,7 +94,8 @@ async def lifespan(app: FastAPI):
     from app.services.knowledge.embedding import EmbeddingClient
     embedding_client = EmbeddingClient(
         base_url=settings.embedding_base_url, api_key=settings.embedding_api_key,
-        model=settings.embedding_model_name, batch_size=settings.embedding_batch_size)
+        model=settings.embedding_model_name, batch_size=settings.embedding_batch_size,
+        revision=settings.embedding_revision)
     graph = make_graph(model, build_tools(db, embedding_client), WRITE_TOOLS, checkpointer,
                        memory_loader=load_memory_text,
                        tool_timeout=settings.tool_timeout_seconds,

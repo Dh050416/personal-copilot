@@ -9,6 +9,7 @@ bge-m3 输出 1024 维向量，与 knowledge_chunks.embedding 的 Vector(1024) �
 from __future__ import annotations
 
 import math
+import hashlib
 
 from openai import AsyncOpenAI
 
@@ -21,12 +22,17 @@ class EmbeddingClient:
     def model_name(self) -> str:
         return self._model
 
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(f'{self._model}\n{self._revision}\n{EMBEDDING_DIM}'.encode()).hexdigest()
+
     """OpenAI 兼容 embedding 客户端（本地 ollama / 云端通用）。"""
 
     def __init__(self, base_url: str, api_key: str, model: str,
-                 batch_size: int = 16, timeout: float = 120):
+                 batch_size: int = 16, timeout: float = 120, revision: str = 'v1'):
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
         self._model = model
+        self._revision = revision
         if batch_size < 1:
             raise ValueError('embedding batch_size 必须大于 0')
         self._batch_size = batch_size
