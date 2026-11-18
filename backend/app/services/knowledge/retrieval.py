@@ -53,7 +53,7 @@ async def retrieve(db, user_id: int, query: str, embed_client: EmbeddingClient,
             )
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
             .where(KnowledgeChunk.user_id == user_id,
-                   KnowledgeDocument.user_id == user_id, KnowledgeDocument.status == 'ready',
+                   KnowledgeDocument.user_id == user_id, KnowledgeDocument.chunk_count > 0,
                    KnowledgeDocument.embedding_model == embed_client.fingerprint)
             .order_by('distance')
             .limit(top_k)

@@ -2,7 +2,7 @@
 import asyncio
 import logging
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 
 from app.data.models import KnowledgeDocument
 from app.services.knowledge.ingest import ingest_document
@@ -20,7 +20,8 @@ async def run_ingestion_worker(db, client, chunk_size, chunk_overlap):
             async with db.sessions() as session:
                 ids = list(await session.scalars(select(KnowledgeDocument.id).where(
                     KnowledgeDocument.status == 'pending',
-                    KnowledgeDocument.source_bytes.is_not(None)
+                    KnowledgeDocument.source_bytes.is_not(None),
+                    or_(KnowledgeDocument.retry_at.is_(None), KnowledgeDocument.retry_at <= func.now())
                 ).order_by(KnowledgeDocument.id).limit(20)))
             for doc_id in ids:
                 async with db.sessions() as session:

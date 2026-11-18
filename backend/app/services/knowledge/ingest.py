@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from contextlib import suppress
+from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -87,9 +88,12 @@ async def ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
     try:
         async with db.sessions() as session:
             doc = await session.get(KnowledgeDocument, doc_id, with_for_update=True)
-            if doc is None or doc.status == 'ready':
+            if doc is None or doc.status != 'pending':
+                return
+            if doc.retry_at is not None and doc.retry_at > now_utc():
                 return
             doc.ingest_owner = owner
+            doc.ingest_attempts += 1
             await session.commit()
         execution = asyncio.create_task(_ingest_document(
             db, doc_id, filename, file_bytes, embed_client, chunk_size, chunk_overlap, owner))
@@ -108,7 +112,9 @@ async def ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
 
         watcher = asyncio.create_task(monitor())
         try:
-            await execution
+            await asyncio.wait_for(execution, timeout=300)
+        except TimeoutError:
+            await _mark_failed(db, doc_id, '摄入超时（300 秒）', owner, retryable=True)
         except asyncio.CancelledError:
             if not lost.is_set():
                 raise
@@ -157,26 +163,30 @@ async def _ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
                 doc.status = 'ready'
                 doc.chunk_count = len(chunks)
                 doc.error_message = None
+                doc.retry_at = None
+                doc.ingest_attempts = 0
                 doc.embedding_model = embed_client.fingerprint
                 doc.pipeline_version = 'structured-v3'
                 doc.updated_at = now_utc()
     except Exception as exc:  # noqa: BLE001 —— 摄入失败必须兜底，绝不让后台任务静默崩溃
-        await _mark_failed(db, doc_id, str(exc), owner)
+        from openai import APIConnectionError, APIStatusError
+        retryable = isinstance(exc, (APIConnectionError, TimeoutError)) or (
+            isinstance(exc, APIStatusError) and (exc.status_code == 429 or exc.status_code >= 500))
+        await _mark_failed(db, doc_id, str(exc), owner, retryable=retryable)
 
 
-async def _mark_failed(db, doc_id: int, error_message: str, owner: str) -> None:
+async def _mark_failed(db, doc_id: int, error_message: str, owner: str, retryable=False) -> None:
     """失败收尾：删除已写入的块（避免脏数据）+ 标记 failed。"""
     async with db.sessions() as session:
         async with session.begin():
             doc = await session.get(KnowledgeDocument, doc_id, with_for_update=True)
             if doc is None or doc.ingest_owner != owner or doc.status != 'pending':
                 return
-            await session.execute(
-                delete(KnowledgeChunk).where(KnowledgeChunk.document_id == doc_id))
             if doc is not None:
-                doc.status = 'failed'
+                retry = retryable and doc.ingest_attempts < 3
+                doc.status = 'pending' if retry else 'failed'
+                doc.retry_at = now_utc() + timedelta(seconds=10 * 2 ** doc.ingest_attempts) if retry else None
                 doc.error_message = error_message[:1000]
-                doc.chunk_count = 0
                 doc.updated_at = now_utc()
 
 

@@ -83,6 +83,8 @@ async def retry_document(doc_id: int, request: Request):
                 raise HTTPException(409, '旧文档没有持久化源文件，请重新上传')
             doc.status = 'pending'
             doc.error_message = None
+            doc.ingest_attempts = 0
+            doc.retry_at = None
     return IngestResponse(doc_id=doc_id, status='pending')
 
 
@@ -102,6 +104,8 @@ async def rebuild_document(doc_id: int, request: Request):
                     raise HTTPException(409, '请重新上传原文件以补齐源数据')
                 doc.status = 'pending'
                 doc.error_message = None
+                doc.ingest_attempts = 0
+                doc.retry_at = None
         return IngestResponse(doc_id=doc_id, status='pending')
     finally:
         await lease.close()

@@ -170,6 +170,8 @@ class KnowledgeDocument(Base):
     embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     pipeline_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ingest_owner: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ingest_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     __table_args__ = (UniqueConstraint('user_id', 'content_hash'),)
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)

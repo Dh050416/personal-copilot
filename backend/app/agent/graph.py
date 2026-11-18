@@ -534,8 +534,11 @@ def make_run_tools_node(tools, write_tools, *, tool_timeout=None, retry_backoff=
             cache_key = None
             cached = None
             if tool_cache is not None and cacheable_tools is not None and name in cacheable_tools:
-                cache_key = _cache_key(name, args)
+                cache_key = _cache_key(f'u{_USER_ID.get()}:{name}', args)
                 cached = tool_cache.get(cache_key)
+                import inspect
+                if inspect.isawaitable(cached):
+                    cached = await cached
             if cached is not None:
                 # 缓存命中：写入时已过卫生与输出契约校验，直接复用，不重跑库
                 content, artifact_data = cached
@@ -601,7 +604,9 @@ def make_run_tools_node(tools, write_tools, *, tool_timeout=None, retry_backoff=
                         events.append(_event('tool_result', {'tool': name, 'result': result}))
                         continue
                 if cache_key is not None:
-                    tool_cache.set(cache_key, content, artifact_data)
+                    cache_write = tool_cache.set(cache_key, content, artifact_data)
+                    if inspect.isawaitable(cache_write):
+                        await cache_write
                 emit_success(content, artifact_data, call_id, name, args, invocation_id, attempts=attempts)
             except TimeoutError:
                 # 工具执行超时（重试耗尽）：结构化错误回喂模型，标记 retryable 让模型可修正/换路径
