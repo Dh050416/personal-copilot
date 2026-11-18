@@ -1,7 +1,6 @@
-"""bge-m3 向量化 client（OpenAI 兼容 /embeddings 接口）。
+"""Qwen3-VL 向量化 client（OpenAI 兼容 /embeddings 接口）。
 
-默认指向本地 ollama（EMBEDDING_BASE_URL，与 chat 模型配置完全独立）。
-bge-m3 输出 1024 维向量，与 knowledge_chunks.embedding 的 Vector(1024) 对应。
+默认指向硅基流动，与 chat 模型配置独立，输出 4096 维向量。
 
 批量：一次 /embeddings 请求可传多个文本（input 为列表），按 embedding_batch_size
 分批，减少网络往返；响应按 index 对齐回原始顺序。
@@ -13,8 +12,8 @@ import math
 
 from openai import AsyncOpenAI
 
-# bge-m3 的向量维度，建表时已固定为 Vector(1024)
-EMBEDDING_DIM = 1024
+# 与 knowledge_chunks.embedding 的存储维度一致。
+EMBEDDING_DIM = 4096
 
 
 class EmbeddingClient:

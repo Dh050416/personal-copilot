@@ -35,10 +35,10 @@ class Settings(BaseSettings):
     # embedding 调用频繁且涉及文档内容隐私，本地跑免费且数据不出本机；
     # chat 模型（上面 MODEL_*）可独立切 DeepSeek 等云端，两者互不影响。
     # 注意：Windows 本机用 127.0.0.1 而非 localhost（IPv6 解析坑）。
-    embedding_base_url: str = 'http://127.0.0.1:11434/v1'
-    embedding_model_name: str = 'bge-m3'
+    embedding_base_url: str = 'https://api.siliconflow.cn/v1'
+    embedding_model_name: str = 'Qwen/Qwen3-VL-Embedding-8B'
     embedding_revision: str = 'v1'  # Change whenever weights or embedding preprocessing change.
-    embedding_api_key: str = 'local'
+    embedding_api_key: str = ''
     # 单次 /embeddings 请求的批大小（一次向量化多少块，减少网络往返）
     embedding_batch_size: int = Field(default=16, ge=1, le=128)
     max_steps: int = Field(default=8, ge=1, le=30)

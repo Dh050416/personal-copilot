@@ -136,7 +136,7 @@ async def _ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
         for v in vectors:
             if len(v) != EMBEDDING_DIM:
                 raise ValueError(f'向量维度 {len(v)} 与建表维度 {EMBEDDING_DIM} 不一致，'
-                                 f'请确认 EMBEDDING_MODEL_NAME 为 bge-m3。')
+                                 f'请确认配置模型输出为 {EMBEDDING_DIM} 维。')
 
         # --- 入库（单事务：清旧块 + 批量插新块 + 置 ready）---
         async with db.sessions() as session:
