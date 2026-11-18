@@ -65,6 +65,11 @@ def parse_markdown(content: str) -> list[ParsedParagraph]:
         text = '\n'.join(buffer).strip()
         buffer.clear()
         if text:
+            lines = text.splitlines()
+            if kind == 'text' and len(lines) >= 2 and '|' in lines[0] and re.fullmatch(
+                    r'\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*', lines[1]):
+                text = '\n'.join([lines[0], *lines[2:]])
+                kind = 'table'
             paras.append(ParsedParagraph(
                 text=text, heading_path=tuple(t for _, t in stack), level=0, kind=kind))
 

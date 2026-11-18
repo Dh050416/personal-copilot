@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -166,6 +166,9 @@ class KnowledgeDocument(Base):
     - title 是用户可编辑的展示标题；filename 记录原始文件名（溯源用，不可改）。
     """
     __tablename__ = 'knowledge_documents'
+    source_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     __table_args__ = (UniqueConstraint('user_id', 'content_hash'),)
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)

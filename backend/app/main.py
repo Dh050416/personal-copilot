@@ -122,9 +122,17 @@ async def lifespan(app: FastAPI):
     # 线程运行时状态：thread_id → {active, pending(追加输入队列), waiting_approval}
     # 检查点注入（执行中可追加任务）的队列宿主；单进程内存即可（本机单实例）
     app.state.thread_runtime = {}
+    from app.services.knowledge.worker import run_ingestion_worker
+    ingestion_worker = asyncio.create_task(run_ingestion_worker(
+        db, embedding_client, settings.chunk_size, settings.chunk_overlap))
     try:
         yield
     finally:
+        ingestion_worker.cancel()
+        try:
+            await ingestion_worker
+        except asyncio.CancelledError:
+            pass
         langfuse_flush()
         await checkpoint_cm.__aexit__(None, None, None)
         await db.close()

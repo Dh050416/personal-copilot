@@ -37,7 +37,8 @@ def compute_content_hash(content: bytes) -> str:
 
 async def create_pending_document(db, user_id: int, title: str, source_type: str,
                                   content_hash: str, filename: str | None = None,
-                                  file_size: int | None = None) -> KnowledgeDocument:
+                                  file_size: int | None = None,
+                                  source_bytes: bytes | None = None) -> KnowledgeDocument:
     """去重检查 + 建 pending 文档记录。返回文档（调用方据此返回 doc_id 给前端）。"""
     async with db.sessions() as session:
         existing = await session.scalar(
@@ -49,6 +50,7 @@ async def create_pending_document(db, user_id: int, title: str, source_type: str
         doc = KnowledgeDocument(
             user_id=user_id, title=title, source_type=source_type, filename=filename,
             file_size=file_size, content_hash=content_hash, status='pending',
+            source_bytes=source_bytes,
             chunk_count=0, created_at=now_utc(), updated_at=now_utc())
         session.add(doc)
         try:
@@ -118,6 +120,8 @@ async def _ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
                 doc.status = 'ready'
                 doc.chunk_count = len(chunks)
                 doc.error_message = None
+                doc.embedding_model = embed_client.model_name
+                doc.pipeline_version = 'structured-v3'
                 doc.updated_at = now_utc()
     except Exception as exc:  # noqa: BLE001 —— 摄入失败必须兜底，绝不让后台任务静默崩溃
         await _mark_failed(db, doc_id, str(exc))

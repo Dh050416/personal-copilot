@@ -17,6 +17,10 @@ EMBEDDING_DIM = 1024
 
 
 class EmbeddingClient:
+    @property
+    def model_name(self) -> str:
+        return self._model
+
     """OpenAI 兼容 embedding 客户端（本地 ollama / 云端通用）。"""
 
     def __init__(self, base_url: str, api_key: str, model: str,
