@@ -8,6 +8,8 @@ bge-m3 输出 1024 维向量，与 knowledge_chunks.embedding 的 Vector(1024) �
 """
 from __future__ import annotations
 
+import math
+
 from openai import AsyncOpenAI
 
 # bge-m3 的向量维度，建表时已固定为 Vector(1024)
@@ -21,6 +23,8 @@ class EmbeddingClient:
                  batch_size: int = 16, timeout: float = 120):
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
         self._model = model
+        if batch_size < 1:
+            raise ValueError('embedding batch_size 必须大于 0')
         self._batch_size = batch_size
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -33,6 +37,14 @@ class EmbeddingClient:
             resp = await self._client.embeddings.create(model=self._model, input=batch)
             # 按 index 对齐回原始顺序（API 不保证返回顺序）
             data = sorted(resp.data, key=lambda d: d.index)
+            if [d.index for d in data] != list(range(len(batch))):
+                raise ValueError('embedding 响应索引缺失、重复或越界')
+            for item in data:
+                vector = item.embedding
+                if len(vector) != EMBEDDING_DIM or not all(math.isfinite(v) for v in vector):
+                    raise ValueError('embedding 向量维度错误或包含非有限数值')
+                if not any(v != 0 for v in vector):
+                    raise ValueError('embedding 返回零向量，无法计算余弦距离')
             vectors.extend([list(d.embedding) for d in data])
         return vectors
 

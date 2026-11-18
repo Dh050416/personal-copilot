@@ -35,6 +35,7 @@ class ParsedParagraph:
     heading_path: tuple[str, ...] = field(default_factory=tuple)
     page: int | None = None
     level: int = 0
+    kind: str = 'text'
 
 
 # --------------------------------------------------------------------------- #
@@ -60,21 +61,25 @@ def parse_markdown(content: str) -> list[ParsedParagraph]:
     buffer: list[str] = []
     fence: str | None = None
 
-    def flush():
+    def flush(kind='text'):
         text = '\n'.join(buffer).strip()
         buffer.clear()
         if text:
             paras.append(ParsedParagraph(
-                text=text, heading_path=tuple(t for _, t in stack), level=0))
+                text=text, heading_path=tuple(t for _, t in stack), level=0, kind=kind))
 
     for line in content.splitlines():
         marker = re.match(r'^\s{0,3}(`{3,}|~{3,})(.*)$', line)
         if marker:
             run, rest = marker.groups()
             if fence is None:
+                flush()
                 fence = run
             elif run[0] == fence[0] and len(run) >= len(fence) and not rest.strip():
                 fence = None
+                buffer.append(line)
+                flush('code')
+                continue
             buffer.append(line)
             continue
         if fence is not None:
@@ -93,7 +98,7 @@ def parse_markdown(content: str) -> list[ParsedParagraph]:
             buffer.append(line)
             if not line.strip():
                 flush()
-    flush()
+    flush('code' if fence else 'text')
     return paras
 
 
@@ -127,11 +132,14 @@ def parse_docx(file_bytes: bytes) -> list[ParsedParagraph]:
     for element in doc.element.body.iterchildren():
         if element.tag == qn('w:tbl'):
             table = Table(element, doc)
+            rows = []
             for row in table.rows:
                 cells = [c.text.strip() for c in row.cells]
                 if any(cells):
-                    paras.append(ParsedParagraph(
-                        text=' | '.join(cells), heading_path=tuple(t for _, t in stack)))
+                    rows.append(' | '.join(cells))
+            if rows:
+                paras.append(ParsedParagraph(text='\n'.join(rows),
+                                             heading_path=tuple(t for _, t in stack), kind='table'))
             continue
         if element.tag != qn('w:p'):
             continue
@@ -272,11 +280,23 @@ def parse_document(filename: str, file_bytes: bytes) -> list[ParsedParagraph]:
     """按扩展名分发到各解析器。返回结构化段落流（供 chunking 使用）。"""
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     if ext in {'txt', 'text'}:
-        return parse_text(file_bytes.decode('utf-8', errors='replace'))
+        return parse_text(_decode_text(file_bytes))
     if ext in {'md', 'markdown'}:
-        return parse_markdown(file_bytes.decode('utf-8', errors='replace'))
+        return parse_markdown(_decode_text(file_bytes))
     if ext == 'docx':
         return parse_docx(file_bytes)
     if ext == 'pdf':
         return parse_pdf(file_bytes)
     raise ValueError(f'暂不支持的文件格式：.{ext}（第一期支持 txt / md / docx / pdf）')
+
+
+def _decode_text(content: bytes) -> str:
+    encodings = ('utf-16',) if content.startswith((b'\xff\xfe', b'\xfe\xff')) else ('utf-8-sig', 'gb18030')
+    for encoding in encodings:
+        try:
+            decoded = content.decode(encoding)
+            if '\x00' not in decoded:
+                return decoded
+        except UnicodeDecodeError:
+            continue
+    raise ValueError('无法识别文本编码，请转换为 UTF-8 后上传')

@@ -51,12 +51,15 @@ def _schedule_ingest(request: Request, background: BackgroundTasks, doc_id: int,
 async def upload_document(file: UploadFile, request: Request, background: BackgroundTasks,
                           title: str | None = None):
     """上传文件摄入（txt / md / docx / pdf）。立即返回 pending，后台异步摄入。"""
-    file_bytes = await file.read()
+    file_bytes = await file.read(MAX_FILE_BYTES + 1)
+    await file.close()
     if not file_bytes:
         raise HTTPException(400, '文件内容为空')
     if len(file_bytes) > MAX_FILE_BYTES:
         raise HTTPException(413, f'文件超过 {MAX_FILE_BYTES // 1024 // 1024}MB 上限')
     filename = file.filename or 'untitled'
+    if filename.rsplit('.', 1)[-1].lower() not in {'txt', 'text', 'md', 'markdown', 'docx', 'pdf'}:
+        raise HTTPException(415, '仅支持 txt / md / docx / pdf')
     doc_title = (title or '').strip() or filename.rsplit('.', 1)[0]
     content_hash = compute_content_hash(file_bytes)
     try:
@@ -73,6 +76,8 @@ async def upload_document(file: UploadFile, request: Request, background: Backgr
 async def ingest_text(payload: IngestTextRequest, request: Request, background: BackgroundTasks):
     """粘贴文本摄入：直接贴一段文字入库（无需文件）。"""
     file_bytes = payload.text.encode('utf-8')
+    if len(file_bytes) > MAX_FILE_BYTES:
+        raise HTTPException(413, '文本超过大小上限')
     content_hash = compute_content_hash(file_bytes)
     try:
         doc = await create_pending_document(

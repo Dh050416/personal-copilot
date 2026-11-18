@@ -91,6 +91,29 @@ def chunk_paragraphs(paras: list[ParsedParagraph], chunk_size: int = 400,
                                 chunk_index=len(chunks)))
 
     for para in paras:
+        if para.kind in {'table', 'code'}:
+            if buf.strip():
+                emit(buf, path, page)
+                buf = ''
+            path, page = para.heading_path, para.page
+            if para.kind == 'code':
+                # Keep code intact; embedding input limits are enforced by the provider.
+                chunks.append(Chunk(content=para.text, heading_path=path, page=page,
+                                    chunk_index=len(chunks)))
+            else:
+                rows = para.text.splitlines()
+                header = rows[0] if rows else ''
+                current = header
+                for row in rows[1:]:
+                    if len(current) + len(row) + 1 > chunk_size and current != header:
+                        chunks.append(Chunk(content=current, heading_path=path, page=page,
+                                            chunk_index=len(chunks)))
+                        current = header
+                    current += '\n' + row
+                if current:
+                    chunks.append(Chunk(content=current, heading_path=path, page=page,
+                                        chunk_index=len(chunks)))
+            continue
         if para.level > 0 or para.heading_path != path or para.page != page:
             # 标题段：冲掉旧缓冲，切换章节路径，标题文本进入下一块开头（提供上下文）
             if buf.strip():

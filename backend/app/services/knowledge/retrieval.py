@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 
-from app.data.models import KnowledgeChunk
+from app.data.models import KnowledgeChunk, KnowledgeDocument
 from app.services.knowledge.embedding import EmbeddingClient
 
 
@@ -51,7 +51,9 @@ async def retrieve(db, user_id: int, query: str, embed_client: EmbeddingClient,
                 KnowledgeChunk.document_id,
                 KnowledgeChunk.embedding.cosine_distance(query_vec).label('distance'),
             )
-            .where(KnowledgeChunk.user_id == user_id)
+            .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
+            .where(KnowledgeChunk.user_id == user_id,
+                   KnowledgeDocument.user_id == user_id, KnowledgeDocument.status == 'ready')
             .order_by('distance')
             .limit(top_k)
         )

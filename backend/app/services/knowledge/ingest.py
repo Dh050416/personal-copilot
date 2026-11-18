@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from app.data.models import KnowledgeChunk, KnowledgeDocument, now_utc
 from app.services.knowledge.chunking import chunk_paragraphs
@@ -49,7 +51,15 @@ async def create_pending_document(db, user_id: int, title: str, source_type: str
             file_size=file_size, content_hash=content_hash, status='pending',
             chunk_count=0, created_at=now_utc(), updated_at=now_utc())
         session.add(doc)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            existing = await session.scalar(select(KnowledgeDocument).where(
+                KnowledgeDocument.user_id == user_id, KnowledgeDocument.content_hash == content_hash))
+            if existing is not None:
+                raise DuplicateDocumentError(existing.id) from None
+            raise
         await session.refresh(doc)
         return doc
 
@@ -57,11 +67,28 @@ async def create_pending_document(db, user_id: int, title: str, source_type: str
 async def ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
                           embed_client: EmbeddingClient, chunk_size: int = 400,
                           chunk_overlap: int = 50) -> None:
+    from app.services.coordination import Coordinator
+    lease = await Coordinator(db).acquire(f'knowledge-ingest:{doc_id}')
+    if lease is None:
+        return
+    try:
+        async with db.sessions() as session:
+            doc = await session.get(KnowledgeDocument, doc_id)
+            if doc is None or doc.status == 'ready':
+                return
+        await _ingest_document(db, doc_id, filename, file_bytes, embed_client, chunk_size, chunk_overlap)
+    finally:
+        await lease.close()
+
+
+async def _ingest_document(db, doc_id: int, filename: str, file_bytes: bytes,
+                           embed_client: EmbeddingClient, chunk_size: int,
+                           chunk_overlap: int) -> None:
     """后台摄入主流程：解析 → 分块 → 向量化 → 入库。任何失败都标记 failed 并清理脏块。"""
     try:
         # --- 耗时操作（事务外，不持有数据库连接）---
-        paras = parse_document(filename, file_bytes)
-        chunks = chunk_paragraphs(paras, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        paras = await asyncio.to_thread(parse_document, filename, file_bytes)
+        chunks = await asyncio.to_thread(chunk_paragraphs, paras, chunk_size, chunk_overlap)
         if not chunks:
             raise ValueError('未能从文档中解析出有效文本内容。')
         vectors = await embed_client.embed_texts([c.content for c in chunks])
