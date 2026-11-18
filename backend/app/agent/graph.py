@@ -576,7 +576,13 @@ def make_run_tools_node(tools, write_tools, *, tool_timeout=None, retry_backoff=
                 artifact = getattr(msg, 'artifact', None)
                 artifact_data = artifact.model_dump(mode='json') if hasattr(artifact, 'model_dump') else artifact
                 # 上下文卫生：超长结果截断/超行保留前 N 行，防上下文爆炸
-                content = sanitize_tool_content(content, context_max_chars, context_max_lines)
+                if name == 'search_knowledge' and isinstance(artifact_data, dict):
+                    from app.services.knowledge.retrieval import budget_evidence
+                    content, artifact_data = budget_evidence(
+                        artifact_data, context_max_chars, context_max_lines)
+                    content = sanitize_tool_content(content)
+                else:
+                    content = sanitize_tool_content(content, context_max_chars, context_max_lines)
                 # 输出契约校验：统一出口用声明的 output_schema 二次校验，
                 # 防契约漂移/脏数据进入状态、前端与记忆；失败转 OUTPUT_INVALID 结构化错误。
                 schema = output_schemas.get(name) if output_schemas else None

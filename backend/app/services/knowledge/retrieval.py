@@ -72,5 +72,25 @@ def format_results_for_model(results: list[RetrievalResult]) -> str:
     for i, r in enumerate(results, 1):
         source = f'【{r.heading_text}】' if r.heading_text else ''
         page = f'（第{r.page}页）' if r.page else ''
-        parts.append(f'\n[{i}]{source}{page}\n{r.content}')
+        parts.append(f'\n[{i}] 文档 {r.document_id} / 片段 {r.chunk_id} {source}{page}\n{r.content}')
     return ''.join(parts)
+
+
+def budget_evidence(data: dict, max_chars: int | None, max_lines: int | None) -> tuple[str, dict]:
+    """Select whole chunks; the model text and UI artifact share exactly the same evidence."""
+    selected = []
+    results = []
+    for item in data.get('items', []):
+        result = RetrievalResult(**{key: item[key] for key in (
+            'chunk_id', 'content', 'heading_path', 'page', 'document_id', 'distance')})
+        candidate = format_results_for_model([*results, result])
+        if max_chars and len(candidate) > max_chars:
+            continue
+        if max_lines and len(candidate.splitlines()) > max_lines:
+            continue
+        selected.append(item)
+        results.append(result)
+    content = (format_results_for_model(results) if results else
+               '当前证据预算内没有可用的完整片段，请缩小查询范围；不能据此判断文档没有相关内容。'
+               if data.get('items') else '知识库中没有找到相关内容。')
+    return content, {**data, 'items': selected, 'count': len(selected)}
