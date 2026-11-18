@@ -58,6 +58,7 @@ def parse_markdown(content: str) -> list[ParsedParagraph]:
     paras: list[ParsedParagraph] = []
     stack: list[tuple[int, str]] = []  # [(level, title)]
     buffer: list[str] = []
+    fence: str | None = None
 
     def flush():
         text = '\n'.join(buffer).strip()
@@ -67,6 +68,18 @@ def parse_markdown(content: str) -> list[ParsedParagraph]:
                 text=text, heading_path=tuple(t for _, t in stack), level=0))
 
     for line in content.splitlines():
+        marker = re.match(r'^\s{0,3}(`{3,}|~{3,})(.*)$', line)
+        if marker:
+            run, rest = marker.groups()
+            if fence is None:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not rest.strip():
+                fence = None
+            buffer.append(line)
+            continue
+        if fence is not None:
+            buffer.append(line)
+            continue
         m = _MD_HEADING.match(line.strip())
         if m:
             flush()
@@ -107,7 +120,22 @@ def parse_docx(file_bytes: bytes) -> list[ParsedParagraph]:
         m = re.search(r'标题\s*(\d)', para.style.name if para.style is not None else '')
         return int(m.group(1)) if m else 0
 
-    for para in doc.paragraphs:
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    for element in doc.element.body.iterchildren():
+        if element.tag == qn('w:tbl'):
+            table = Table(element, doc)
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells]
+                if any(cells):
+                    paras.append(ParsedParagraph(
+                        text=' | '.join(cells), heading_path=tuple(t for _, t in stack)))
+            continue
+        if element.tag != qn('w:p'):
+            continue
+        para = Paragraph(element, doc)
         text = para.text.strip()
         if not text:
             continue
@@ -122,7 +150,7 @@ def parse_docx(file_bytes: bytes) -> list[ParsedParagraph]:
                 text=text, heading_path=tuple(t for _, t in stack), level=0))
 
     # 表格：每行单元格用「 | 」连接，作为正文段（继承当前章节路径）
-    for table in doc.tables:
+    for table in []:  # Tables are emitted in document order above.
         for row in table.rows:
             cells = [c.text.strip() for c in row.cells if c.text.strip()]
             if cells:
@@ -156,7 +184,16 @@ def _pdf_page_lines(page) -> list[dict]:
 
 
 def _make_line(words: list[dict]) -> dict:
-    text = ''.join(w['text'] for w in words).strip()
+    parts = []
+    for index, word in enumerate(words):
+        if index:
+            previous = words[index - 1]
+            left, right = previous['text'][-1:], word['text'][:1]
+            gap = word['x0'] - previous.get('x1', word['x0'])
+            if gap > 1 and left.isascii() and right.isascii() and left.isalnum() and right.isalnum():
+                parts.append(' ')
+        parts.append(word['text'])
+    text = ''.join(parts).strip()
     sizes = [round(float(w.get('size', 0)), 1) for w in words]
     body_size = max(set(sizes), key=sizes.count) if sizes else 0.0
     return {'text': text, 'size': body_size, 'top': words[0]['top']}
