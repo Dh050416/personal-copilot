@@ -527,6 +527,7 @@ export interface KnowledgeDocumentItem {
 export interface IngestResponse {
   doc_id: number
   status: string
+  existing?: boolean
 }
 
 /** 列出知识库文档（按创建时间倒序） */
@@ -545,20 +546,54 @@ export async function getKnowledgeDocument(docId: number): Promise<KnowledgeDocu
 }
 
 /** 上传文件摄入（txt/md/docx/pdf），立即返回 pending，后台异步向量化 */
-export async function uploadKnowledgeFile(file: File, title?: string): Promise<IngestResponse> {
-  const body = new FormData()
-  body.append("file", file)
-  if (title) body.append("title", title)
-  const response = await authedFetch(`${API_BASE}/api/knowledge/documents/upload`, {
-    method: "POST",
-    body,
-  })
-  const data = (await response.json()) as unknown
-  if (!response.ok) {
-    const detail = (data as { detail?: string })?.detail
-    throw new Error(detail || "文件上传失败")
+export async function uploadKnowledgeFile(file: File, title?: string,
+  progress?: (percent: number, text: string) => void, signal?: AbortSignal,
+  onSession?: (id: string) => void): Promise<IngestResponse> {
+  if (!file.size || file.size > 256 * 1024 * 1024) throw new Error("请选择不超过 256MB 的非空文件")
+  const hash = async (blob: Blob): Promise<string> => Array.from(new Uint8Array(
+    await crypto.subtle.digest("SHA-256", await blob.arrayBuffer())
+  )).map((byte) => byte.toString(16).padStart(2, "0")).join("")
+  const endpoint = `${API_BASE}/api/knowledge/uploads`
+  async function call(url: string, init?: RequestInit): Promise<any> {
+    const response = await authedFetch(url, { ...init, signal })
+    const data = await response.json()
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `上传失败（${response.status}）`)
+    return data
   }
-  return data as IngestResponse
+  progress?.(0, "正在校验文件…")
+  const sha256 = await hash(file)
+  if (signal?.aborted) throw new DOMException("已暂停", "AbortError")
+  const upload = await call(endpoint, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, title: title || "", size: file.size, sha256 }) })
+  if (upload.doc_id != null) return upload
+  onSession?.(upload.upload_id)
+  const received = new Set<number>(upload.received)
+  const total = Math.ceil(file.size / upload.chunk_size)
+  progress?.(Math.floor(received.size / total * 100), `恢复 ${received.size}/${total} 个分片`)
+  for (let part = 0; part < total; part++) {
+    if (received.has(part)) continue
+    const blob = file.slice(part * upload.chunk_size, (part + 1) * upload.chunk_size)
+    const digest = await hash(blob)
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await call(`${endpoint}/${upload.upload_id}/parts/${part}`, { method: "PUT", body: blob,
+          headers: { "Content-Type": "application/octet-stream", "X-Chunk-SHA256": digest } })
+        break
+      } catch (error) {
+        if (signal?.aborted || attempt >= 2) throw error
+        await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt))
+      }
+    }
+    received.add(part)
+    progress?.(Math.floor(received.size / total * 100), `上传 ${received.size}/${total} 个分片`)
+  }
+  progress?.(100, "正在合并校验…")
+  return call(`${endpoint}/${upload.upload_id}/complete`, { method: "POST" })
+}
+
+export async function cancelKnowledgeUpload(id: string): Promise<void> {
+  const response = await authedFetch(`${API_BASE}/api/knowledge/uploads/${id}`, { method: "DELETE" })
+  if (!response.ok && response.status !== 404 && response.status !== 410) throw new Error("取消上传失败，请重试")
 }
 
 /** 粘贴文本摄入，立即返回 pending，后台异步向量化 */

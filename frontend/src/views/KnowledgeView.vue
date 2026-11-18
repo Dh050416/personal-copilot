@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import {
   deleteKnowledgeDocument,
+  cancelKnowledgeUpload,
   getKnowledgeDocument,
   ingestKnowledgeText,
   listKnowledgeDocuments,
@@ -24,6 +25,22 @@ const selectedFile = ref<File | null>(null)
 const uploadTitle = ref("")
 const uploading = ref(false)
 const uploadError = ref("")
+const uploadProgress = ref(0)
+const uploadPhase = ref("")
+let uploadController: AbortController | null = null
+const currentUploadId = ref<string | null>(null)
+
+async function abandonUpload(): Promise<void> {
+  if (!currentUploadId.value) return
+  try {
+    await cancelKnowledgeUpload(currentUploadId.value)
+    currentUploadId.value = null
+    resetUpload()
+    uploadPhase.value = "已取消并清理上传分片"
+  } catch (e) {
+    uploadError.value = String(e)
+  }
+}
 
 // —— 粘贴文本 ——
 const pasteTitle = ref("")
@@ -51,6 +68,7 @@ async function load(): Promise<void> {
 
 /** 轮询所有 pending 文档直到全部进入 ready/failed */
 async function pollPending(): Promise<void> {
+  pollTimer = null
   const pending = docs.value.filter((d) => d.status === "pending")
   if (pending.length === 0) return
   for (const doc of pending) {
@@ -91,16 +109,24 @@ async function submitUpload(): Promise<void> {
     return
   }
   uploading.value = true
+  uploadController = new AbortController()
   try {
-    const res = await uploadKnowledgeFile(selectedFile.value, uploadTitle.value.trim() || undefined)
-    notice.value = `已受理，正在摄入（文档 #${res.doc_id}）`
+    const res = await uploadKnowledgeFile(selectedFile.value, uploadTitle.value.trim() || undefined,
+      (percent, text) => { uploadProgress.value = percent; uploadPhase.value = text }, uploadController.signal,
+      (id) => { currentUploadId.value = id })
+    currentUploadId.value = null
+    notice.value = res.existing ? `文档已存在（#${res.doc_id}，${statusLabel(res.status)}），未重复创建`
+      : `上传完成，正在摄入（文档 #${res.doc_id}）`
     resetUpload()
     await load()
     startPolling()
   } catch (e) {
-    uploadError.value = e instanceof Error ? e.message : "上传失败"
+    uploadError.value = uploadController.signal.aborted
+      ? "已暂停，点击继续上传；刷新后重新选择同一文件也可续传（24 小时内）。"
+      : `${e instanceof Error ? e.message : "上传失败"}。分片已保存，重新提交同一文件可续传。`
   } finally {
     uploading.value = false
+    uploadController = null
   }
 }
 
@@ -181,6 +207,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  uploadController?.abort()
   if (pollTimer) window.clearTimeout(pollTimer)
 })
 </script>
@@ -225,6 +252,7 @@ onBeforeUnmount(() => {
           <input
             ref="fileInput"
             type="file"
+            :disabled="uploading"
             class="input file-input"
             accept=".txt,.md,.markdown,.docx,.pdf"
             @change="onFileChange"
@@ -240,9 +268,13 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="form-actions">
+          <span v-if="uploading" role="status">{{ uploadPhase }} {{ uploadProgress }}%</span>
+          <button v-if="uploading" class="btn" @click="uploadController?.abort()">暂停上传</button>
+          <span v-else class="muted">最大 256MB；分片保留 24 小时，重新选择同一文件可续传。</span>
+          <button v-if="!uploading && currentUploadId" class="btn" @click="abandonUpload">取消并清理分片</button>
           <span class="error-text">{{ uploadError }}</span>
           <button class="btn btn-primary" :disabled="uploading || !selectedFile" @click="submitUpload">
-            {{ uploading ? "提交中…" : "上传并入库" }}
+            {{ uploading ? "上传中…" : "上传 / 继续上传" }}
           </button>
         </div>
       </div>

@@ -4,7 +4,7 @@ import logging
 
 from sqlalchemy import func, or_, select, update
 
-from app.data.models import KnowledgeDocument
+from app.data.models import KnowledgeDocument, KnowledgeUpload
 from app.services.knowledge.ingest import ingest_document
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,8 @@ async def run_ingestion_worker(db, client, chunk_size, chunk_overlap):
     while True:
         try:
             async with db.engine.begin() as conn:
+                from sqlalchemy import delete
+                await conn.execute(delete(KnowledgeUpload).where(KnowledgeUpload.expires_at <= func.now()))
                 await conn.execute(update(KnowledgeDocument).where(
                     KnowledgeDocument.status == 'pending', KnowledgeDocument.source_bytes.is_(None)
                 ).values(status='failed', error_message='缺少持久化源文件，请重新上传原文件'))

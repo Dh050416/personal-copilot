@@ -17,6 +17,8 @@ from app.services.knowledge.ingest import (
 )
 
 router = APIRouter(prefix='/api/knowledge', tags=['knowledge'])
+from app.api.knowledge_uploads import router as uploads_router
+router.include_router(uploads_router)
 
 # 单文件大小上限（防止超大文件拖垮摄入与向量化）
 MAX_FILE_BYTES = 20 * 1024 * 1024  # 20MB
@@ -49,7 +51,9 @@ async def upload_document(file: UploadFile, request: Request,
             request.app.state.db, request.state.user_id, doc_title, 'file',
             content_hash, filename=filename, file_size=len(file_bytes), source_bytes=file_bytes)
     except DuplicateDocumentError as exc:
-        raise HTTPException(409, str(exc))
+        async with request.app.state.db.sessions() as session:
+            existing = await session.get(KnowledgeDocument, exc.existing_id)
+            return IngestResponse(doc_id=existing.id, status=existing.status, existing=True)
     return IngestResponse(doc_id=doc.id, status='pending')
 
 
@@ -65,7 +69,9 @@ async def ingest_text(payload: IngestTextRequest, request: Request):
             request.app.state.db, request.state.user_id, payload.title, 'paste',
             content_hash, filename=None, file_size=len(file_bytes), source_bytes=file_bytes)
     except DuplicateDocumentError as exc:
-        raise HTTPException(409, str(exc))
+        async with request.app.state.db.sessions() as session:
+            existing = await session.get(KnowledgeDocument, exc.existing_id)
+            return IngestResponse(doc_id=existing.id, status=existing.status, existing=True)
     # 粘贴文本统一走 txt 解析器
     return IngestResponse(doc_id=doc.id, status='pending')
 

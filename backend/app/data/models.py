@@ -35,6 +35,26 @@ class AgentDecision(Base):
     decision: Mapped[str] = mapped_column(Text)
 
 
+class KnowledgeUpload(Base):
+    __tablename__ = 'knowledge_uploads'
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    filename: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    size: Mapped[int] = mapped_column(BigInteger)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    document_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class KnowledgeUploadPart(Base):
+    __tablename__ = 'knowledge_upload_parts'
+    upload_id: Mapped[str] = mapped_column(ForeignKey('knowledge_uploads.id', ondelete='CASCADE'), primary_key=True)
+    part: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    content_hash: Mapped[str] = mapped_column(String(64))
+
+
 class User(Base):
     """用户账号：每个用户一个独立的生活管家（数据按 user_id 隔离）。"""
     __tablename__ = 'users'

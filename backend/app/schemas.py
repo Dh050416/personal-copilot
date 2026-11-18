@@ -243,6 +243,7 @@ class IngestResponse(StrictModel):
     """摄入受理响应：异步摄入，立即返回 doc_id + pending，前端轮询状态。"""
     doc_id: int
     status: str
+    existing: bool = False
 
 
 class SearchKnowledgeArgs(StrictModel):
