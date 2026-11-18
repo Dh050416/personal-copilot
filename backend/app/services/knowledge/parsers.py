@@ -149,13 +149,6 @@ def parse_docx(file_bytes: bytes) -> list[ParsedParagraph]:
             paras.append(ParsedParagraph(
                 text=text, heading_path=tuple(t for _, t in stack), level=0))
 
-    # 表格：每行单元格用「 | 」连接，作为正文段（继承当前章节路径）
-    for table in []:  # Tables are emitted in document order above.
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                paras.append(ParsedParagraph(
-                    text=' | '.join(cells), heading_path=tuple(t for _, t in stack), level=0))
     return paras
 
 

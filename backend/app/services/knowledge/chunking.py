@@ -50,6 +50,8 @@ def split_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
     递归边界优先级：段落 > 句末标点 > 硬切。保证 start 严格前进，不会死循环。
     """
     text = text.strip()
+    if chunk_size <= 0 or chunk_overlap < 0:
+        raise ValueError('chunk_size 必须大于 0，chunk_overlap 不得小于 0')
     if not text:
         return []
     if len(text) <= chunk_size:
@@ -89,24 +91,19 @@ def chunk_paragraphs(paras: list[ParsedParagraph], chunk_size: int = 400,
                                 chunk_index=len(chunks)))
 
     for para in paras:
-        if para.level > 0:
+        if para.level > 0 or para.heading_path != path or para.page != page:
             # 标题段：冲掉旧缓冲，切换章节路径，标题文本进入下一块开头（提供上下文）
             if buf.strip():
                 emit(buf, path, page)
                 buf = ''
             path = para.heading_path
             page = para.page
-            buf = para.text + '\n'
+            buf = para.text
             continue
         if page is None:
             page = para.page
-        candidate = (buf + para.text) if buf else para.text
-        if buf.strip() and len(candidate) > chunk_size:
-            # 缓冲已满：先切旧缓冲，再开新块
-            emit(buf, path, page)
-            buf = para.text
-        else:
-            buf = candidate
+        # Split the complete page/section together so overlap applies between all its chunks.
+        buf = (buf + '\n\n' + para.text) if buf else para.text
     if buf.strip():
         emit(buf, path, page)
     return chunks
