@@ -20,6 +20,7 @@ def _make_vec(first: float, second: float) -> list[float]:
 
 
 class FakeEmbeddingClient:
+    fingerprint = 'test-embedding-v1'
     """可配置向量方向的 mock embedding client。"""
 
     def __init__(self, vec: list[float] | None = None):

@@ -8,8 +8,8 @@ bge-m3 输出 1024 维向量，与 knowledge_chunks.embedding 的 Vector(1024) �
 """
 from __future__ import annotations
 
-import math
 import hashlib
+import math
 
 from openai import AsyncOpenAI
 

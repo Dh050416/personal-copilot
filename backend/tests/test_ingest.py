@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 
 class FakeEmbeddingClient:
+    fingerprint = 'test-embedding-v1'
     """模拟 embedding：返回 EMBEDDING_DIM 维零向量，无需 ollama。"""
 
     async def embed_texts(self, texts):
