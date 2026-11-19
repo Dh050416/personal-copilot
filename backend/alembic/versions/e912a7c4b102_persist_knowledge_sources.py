@@ -1,11 +1,15 @@
 """Persist knowledge sources and embedding provenance."""
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = 'e912a7c4b102'
 down_revision = 'd80c9bfa2101'
 branch_labels = None
-depends_on = None
+# This branch alters tables created on the sibling knowledge branch. A merge
+# revision alone does not order its two parents during a fresh installation.
+# Keep existing revision ancestry intact and declare the prerequisite explicitly.
+depends_on = '53befa63e1b8'
 
 
 def upgrade():
