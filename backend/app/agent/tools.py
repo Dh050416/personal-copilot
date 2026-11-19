@@ -11,6 +11,7 @@ import re
 import xml.etree.ElementTree as ET
 from contextvars import ContextVar
 from datetime import datetime, time
+from decimal import Decimal
 from html import unescape
 from uuid import uuid4
 
@@ -59,7 +60,7 @@ from app.services.schedule_service import update_event as service_update_event
 WRITE_TOOLS = frozenset({'add_bill', 'create_tracking_card', 'complete_tracking_card', 'create_cards_from_query',
                          'create_event', 'complete_event', 'update_event'})
 # 可缓存工具：纯只读查询，结果在 TTL 内可复用（上下文卫生：同参重复查询不重跑库）
-CACHEABLE_TOOLS = frozenset({'query_bill', 'list_tracking_cards', 'web_search', 'list_events',
+CACHEABLE_TOOLS = frozenset({'list_tracking_cards', 'web_search', 'list_events',
                              'search_knowledge'})
 # 写工具所需权限（声明式，供网关/审计使用）
 TOOL_PERMISSIONS = {
@@ -119,9 +120,9 @@ def bill_common_filters(args) -> list:
     """
     filters = []
     if args.start_date:
-        filters.append(Bill.tx_time >= datetime.combine(args.start_date, time.min).iso_format(timespec='seconds'))
+        filters.append(Bill.tx_time >= datetime.combine(args.start_date, time.min).isoformat(timespec='seconds'))
     if args.end_date:
-        filters.append(Bill.tx_time <= datetime.combine(args.end_date, time.max).iso_format(timespec='seconds'))
+        filters.append(Bill.tx_time <= datetime.combine(args.end_date, time.max).isoformat(timespec='seconds'))
     if args.transaction_type:
         filters.append(Bill.transaction_type == args.transaction_type)
     # 金额边界：inclusive=True 表示含边界（>= / <=）；用户说「超过 N」必须传 inclusive=False
@@ -148,7 +149,8 @@ def build_tools(db, embedding_client=None):
         """查询历史账单，按日期、消费分类、商户/转账对方、金额、支付方式、交易状态及交易类型筛选。
 
         转账记录用 transaction_type=转账；给某人用 merchant 及 direction=expense，收到某人用 income，
-        往来双方用 direction=null。不是发起转账。total 为所有匹配记录金额合计，非净支出，明细最多 100 条；
+        往来双方用 direction=null。不是发起转账。raw口径total为原始金额合计，consumption口径为扣除已知退款的消费净额。
+        明细最多100条且金额始终保留原始值；
         结果较多时分页：用 offset 跳过已看部分、limit 控制每页条数。
         """
         args = QueryBillArgs.model_validate(kwargs)
@@ -177,14 +179,21 @@ def build_tools(db, embedding_client=None):
             filters.append(Bill.amount_cents <= cents if args.max_amount_inclusive else Bill.amount_cents < cents)
         if args.direction and args.direction != 'neutral':
             filters.append(Bill.direction == args.direction)
+        from app.services.bill_accounting import effective_consumption
+        amount_expression = Bill.amount_cents
+        if args.accounting_mode == 'consumption':
+            filters.extend([Bill.nature == 'consumption', Bill.direction == 'expense'])
+            amount_expression = effective_consumption()
         async with db.sessions() as session:
             count, total = (await session.execute(
-                select(func.count(Bill.id), func.coalesce(func.sum(Bill.amount_cents), 0)).where(*filters)
+                select(func.count(Bill.id), func.coalesce(func.sum(amount_expression), 0)).where(*filters)
             )).one()
             bills = list(await session.scalars(
                 select(Bill).where(*filters).order_by(Bill.tx_time.desc(), Bill.id.desc())
                 .offset(args.offset).limit(args.limit)))
         warnings = []
+        if args.accounting_mode == 'consumption':
+            warnings.append('消费统计已扣除已知退款，按原交易日期归属；明细仍展示原始金额。转账及性质不明记录不计入消费。')
         if args.category:
             warnings.append('消费分类含自动推断，未分类记录归为其他；分类筛选可能遗漏未正确分类的记录。')
         async with db.sessions() as session:
@@ -193,14 +202,16 @@ def build_tools(db, embedding_client=None):
                         select(func.count(Bill.id)).where(
                             Bill.user_id == user_id, getattr(Bill, key) == '未知')):
                     warnings.append(f'库中部分旧记录缺少{label}，请重新导入原始账单补齐；本次筛选不包含缺失记录。')
-        total_text = format(total / 100, '.2f')
+        total_text = format(Decimal(total) / Decimal(100), '.2f')
         result = QueryBillResult(
             count=count, total=total_text, returned_count=len(bills), truncated=count > len(bills),
             filters=args.model_dump(mode='json'), items=[bill_view(b) for b in bills], warnings=warnings,
         )
-        summary = (f'查询范围：{scope_text(args)}，共 {count} 笔，记录金额合计 {total_text} 元，'
+        amount_label = '消费净支出' if args.accounting_mode == 'consumption' else '记录金额合计'
+        summary = (f'查询范围：{scope_text(args)}，共 {count} 笔，{amount_label} {total_text} 元，'
                    f'返回第 {args.offset + 1}-{args.offset + len(bills)} 条明细（{len(bills)} 条）；'
-                   f'按原始账单金额统计，未做退款抵扣。')
+                   + ('消费净支出已扣除已知退款，明细为原始金额。' if args.accounting_mode == 'consumption'
+                      else '按原始账单金额统计，未做退款抵扣。'))
         if bills:
             summary += '\n明细（如需建卡关联，用 ID 字段）：'
             for b in bills[:10]:

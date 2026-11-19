@@ -3,7 +3,8 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from app.data.models import Bill
 from app.data.views import bill_view
 from app.schemas import AddBillArgs, ClassifyBillsRequest, ConfirmBillCategory
-from app.services.bill_service import add_bill, classify_existing, import_rows
+from app.services.bill_imports import MAX_BYTES, enqueue
+from app.services.bill_service import add_bill, classify_existing
 from app.services.classification import BillClassifier
 from app.services.importer import parse_file
 
@@ -22,30 +23,19 @@ async def create_bill(payload: AddBillArgs, request: Request):
 
 @router.post('/preview')
 async def preview(file: UploadFile = File(...)):
-    content = await file.read()
+    content = await file.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES:
+        raise HTTPException(413, '账单文件不能超过 20MB')
     try:
         return parse_file(content, file.filename or 'upload.xlsx', source='preview')
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
-@router.post('/import')
+@router.post('/import', status_code=202)
 async def import_bills(request: Request, file: UploadFile = File(...)):
-    content = await file.read()
-    filename = file.filename or 'upload.xlsx'
-    if not filename.lower().endswith(('.xlsx', '.csv')):
-        raise HTTPException(400, '只支持 .xlsx 或 .csv')
-    try:
-        parsed = parse_file(content, filename, source='xlsx')
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    if parsed['errors']:
-        return {**parsed, 'status': 'needs_review', 'message': '导入包含错误，请修正后重新导入'}
-    try:
-        return await import_rows(request.app.state.db, request.state.user_id, parsed['rows'], filename,
-                                 BillClassifier(request.app.state.settings))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    return await enqueue(request.app.state.db, request.state.user_id, file.filename or 'bill.xlsx',
+                         await file.read(MAX_BYTES + 1), 'default')
 
 
 @router.post('/classify')
@@ -64,4 +54,8 @@ async def confirm_category(bill_id: int, payload: ConfirmBillCategory, request: 
             bill.category = payload.category
             bill.category_source = 'user'
             bill.category_confidence = 1.0
+            bill.category_status = 'confirmed'
+            bill.category_reason = '用户手动确认'
+            if bill.direction == 'expense' and bill.nature in ('transfer', 'unknown'):
+                bill.nature = 'consumption'
         return bill_view(bill)

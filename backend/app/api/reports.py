@@ -6,12 +6,14 @@
 - 分类占比只统计「支出」方向（分类是消费概念，收入不参与分类占比）。
 """
 from datetime import date as date_type
+from typing import Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from sqlalchemy import case, func, select
 
 from app.data.models import Bill
 from app.schemas import ReportSummary
+from app.services.bill_accounting import effective_consumption
 
 router = APIRouter(prefix='/api/reports', tags=['reports'])
 
@@ -24,7 +26,8 @@ def _cents_to_yuan(cents: int) -> str:
 @router.get('/summary', response_model=ReportSummary)
 async def summary(request: Request,
                   start_date: date_type | None = None,
-                  end_date: date_type | None = None):
+                  end_date: date_type | None = None,
+                  mode: Literal['raw', 'consumption'] = Query('raw')):
     """汇总：区间内总支出/总收入/笔数、分类占比、按月收支趋势。
 
     start_date/end_date 为日期闭区间（按 tx_time 前缀过滤）；缺省统计全部账单。
@@ -36,34 +39,36 @@ async def summary(request: Request,
         filters.append(Bill.tx_time <= end_date.isoformat() + 'T23:59:59')
 
     async with request.app.state.db.sessions() as session:
+        expense = (effective_consumption() if mode == 'consumption' else
+                   case((Bill.direction == 'expense', Bill.amount_cents), else_=0))
+        income = case(((Bill.direction == 'income') & (
+            Bill.nature.notin_(['refund', 'internal', 'recharge']) if mode == 'consumption' else True),
+                       Bill.amount_cents), else_=0)
         # 总支出 / 总收入 / 笔数
         totals = (await session.execute(
             select(
-                func.coalesce(func.sum(
-                    case((Bill.direction == 'expense', Bill.amount_cents), else_=0)), 0),
-                func.coalesce(func.sum(
-                    case((Bill.direction == 'income', Bill.amount_cents), else_=0)), 0),
+                func.coalesce(func.sum(expense), 0),
+                func.coalesce(func.sum(income), 0),
                 func.count(Bill.id),
             ).where(*filters)
         )).one()
         total_expense, total_income, bill_count = totals
 
         # 分类占比（仅支出方向）
+        category = case((Bill.category_status == 'pending', '待确认'), else_=Bill.category)
         cat_rows = list(await session.execute(
-            select(Bill.category, func.coalesce(func.sum(Bill.amount_cents), 0))
+            select(category, func.coalesce(func.sum(expense), 0))
             .where(Bill.direction == 'expense', *filters)
-            .group_by(Bill.category)
-            .order_by(func.sum(Bill.amount_cents).desc())
+            .group_by(category).having(func.sum(expense) > 0)
+            .order_by(func.sum(expense).desc())
         ))
 
         # 按月趋势：tx_time 形如 YYYY-MM-DDTHH:MM:SS 或 YYYY-MM-DD，取前 7 位（YYYY-MM）
         month_rows = list(await session.execute(
             select(
                 func.substr(Bill.tx_time, 1, 7).label('month'),
-                func.coalesce(func.sum(
-                    case((Bill.direction == 'expense', Bill.amount_cents), else_=0)), 0),
-                func.coalesce(func.sum(
-                    case((Bill.direction == 'income', Bill.amount_cents), else_=0)), 0),
+                func.coalesce(func.sum(expense), 0),
+                func.coalesce(func.sum(income), 0),
             ).where(*filters).group_by('month').order_by('month')
         ))
 
@@ -84,4 +89,10 @@ async def summary(request: Request,
         total_income_cents=total_income,
         categories=categories,
         monthly=monthly,
+        mode=mode,
+        warnings=(['消费支出按原交易日期归属，扣除已知退款；状态退款与关联退款取较大值，避免重复抵扣。',
+                   '转账、红包、资金划转及性质不明记录不计入消费支出；用途未确认的消费仍计入。',
+                   '收入栏是不含已识别退款、内部划转和充值的收入流水，不代表工资或经营收入。',
+                   '未关联且原交易状态未体现的退款无法自动抵扣；模型分类仍是建议。']
+                  if mode == 'consumption' else ['原始收支流水，包含转账及退款相关记录，未做退款抵扣。']),
     )

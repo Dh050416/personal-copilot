@@ -19,12 +19,15 @@ def is_missing(value):
 
 
 async def import_rows(db, user_id, rows, filename, classifier):
+    from app.services.bill_pipeline import transaction_facts
+
     unique = {}
     for incoming in rows:
         key = (incoming['source'], incoming['tx_no'])
         if key in unique and any(unique[key][k] != incoming[k] for k in CORE_FIELDS + RAW_FIELDS):
             raise ValueError('文件内同一交易单号内容冲突，请核对原始账单')
         unique.setdefault(key, dict(incoming))
+        unique[key].update(transaction_facts(incoming))
     async with db.sessions() as session:
         for row in unique.values():
             existing = await session.scalar(select(Bill).where(
@@ -106,6 +109,8 @@ async def add_bill(db, user_id, args, idempotency_key: str | None = None):
                 import_batch_id='manual',
                 source_sheet='',
                 source_row=0,
+                nature='consumption' if args.direction == 'expense' else 'unknown',
+                category_status='confirmed', category_reason='用户手动录入',
             )
             session.add(bill)
             await session.flush()
@@ -119,7 +124,8 @@ async def classify_existing(db, user_id, classifier, limit):
             Bill.category_source.in_(['auto', 'unclassified'])
         ).order_by(Bill.category_checked_at, Bill.id.desc()).limit(limit)))
         rows = [{key: getattr(b, key) for key in (
-            'id', 'merchant', 'product', 'transaction_type', 'direction', *CLASS_FIELDS
+            'id', 'merchant', 'product', 'transaction_type', 'direction', 'nature', 'category_status',
+            'category_reason', *CLASS_FIELDS
         )} for b in bills]
     report = await classifier.classify(rows)
     updated = 0
@@ -130,6 +136,7 @@ async def classify_existing(db, user_id, classifier, limit):
                 result = await session.execute(update(Bill).where(
                     Bill.id == row['id'], Bill.user_id == user_id,
                     Bill.category_source.in_(['auto', 'unclassified'])
-                ).values(**{k: row[k] for k in CLASS_FIELDS}, category_checked_at=now_utc()))
+                ).values(**{k: row[k] for k in (*CLASS_FIELDS, 'category_status', 'category_reason')},
+                         category_checked_at=now_utc()))
                 updated += result.rowcount if row['category_source'] in {'rule', 'llm'} else 0
     return {'processed': len(rows), 'classified': updated, **report}

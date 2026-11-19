@@ -25,6 +25,20 @@ services:
     expose:
       - "8000"
 
+  bill-worker:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - copilot_data:/app/data
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["python", "-m", "app.bill_worker"]
+
   frontend:
     build: ./frontend
     container_name: copilot-frontend

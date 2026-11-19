@@ -2,10 +2,11 @@
 import { ref, watch } from "vue"
 import type { BillRow, QueryBillData } from "../tools/types"
 import { confirmCategory } from "../services/agentClient"
+import { setRefundLink } from "../services/billImports"
 
 const props = defineProps<{ data: QueryBillData }>()
 
-const CATEGORIES = ["餐饮", "交通", "购物", "订阅", "医疗", "住房", "教育", "其他"]
+const CATEGORIES = ["餐饮", "交通", "购物", "订阅", "医疗", "住房", "教育", "住宿", "娱乐", "生活服务", "数码服务", "其他"]
 const SOURCE_LABELS: Record<string, string> = {
   rule: "规则推断",
   llm: "模型推断",
@@ -14,6 +15,8 @@ const SOURCE_LABELS: Record<string, string> = {
   legacy: "历史分类",
   auto: "待分类",
   unclassified: "待分类",
+  user_rule: "用户分类规则",
+  manual: "手动录入",
 }
 const DIRECTION_LABELS: Record<string, string> = {
   expense: "支出",
@@ -24,6 +27,15 @@ const DIRECTION_LABELS: Record<string, string> = {
 const editedCategories = ref<Record<number, string>>({})
 const savingId = ref<number | null>(null)
 const rowMessage = ref("")
+const refundOriginal = ref<Record<number, string>>({})
+async function linkRefund(row: BillRow, remove = false) {
+  const originalId = Number(refundOriginal.value[row.id])
+  if (!remove && (!Number.isInteger(originalId) || originalId <= 0)) { rowMessage.value = "请输入原消费账单 ID"; return }
+  savingId.value = row.id
+  try { await setRefundLink(row.id, remove ? undefined : originalId); rowMessage.value = remove ? "已解除退款关联" : "退款已关联，消费报表会自动抵扣；原始流水保持不变" }
+  catch (e) { rowMessage.value = String(e) }
+  finally { savingId.value = null }
+}
 
 watch(
   () => props.data,
@@ -54,7 +66,7 @@ async function confirm(row: BillRow): Promise<void> {
   <section class="card">
     <div class="card-title">
       <span>匹配账单</span>
-      <span class="hint">共 {{ data.count }} 笔，金额合计 {{ data.total }} 元（按原始账单金额，未做退款抵扣）</span>
+      <span class="hint">共 {{ data.count }} 笔，金额合计 {{ data.total }} 元（{{ data.filters.accounting_mode === 'consumption' ? '消费净额，已扣除已知退款' : '原始账单金额，未做退款抵扣' }}）</span>
     </div>
 
     <div v-if="data.warnings.length" class="warnings">
@@ -92,8 +104,14 @@ async function confirm(row: BillRow): Promise<void> {
             <td>
               {{ row.payment_method }}
               <br /><span class="muted">{{ row.transaction_status }}</span>
+              <div v-if="row.nature === 'refund'">
+                <input v-model="refundOriginal[row.id]" class="input" placeholder="原消费账单 ID" inputmode="numeric" />
+                <button class="btn" :disabled="savingId !== null" @click="linkRefund(row)">关联退款</button>
+                <button class="btn" :disabled="savingId !== null" @click="linkRefund(row, true)">解除关联</button>
+              </div>
             </td>
             <td>
+              <p v-if="row.category_reason" class="muted">{{ row.category_reason }}</p>
               <span class="badge" :class="row.category_source === 'user' ? 'badge-green' : 'badge-gray'">
                 {{ SOURCE_LABELS[row.category_source] ?? row.category_source }}
               </span>

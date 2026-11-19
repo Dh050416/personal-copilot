@@ -8,12 +8,13 @@ const error = ref("")
 
 // 日期区间（默认全部；可选过滤）
 const range = ref({ start: "", end: "" })
+const mode = ref("consumption")
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ""
   try {
-    const params: { start_date?: string; end_date?: string } = {}
+    const params: { start_date?: string; end_date?: string; mode: string } = { mode: mode.value }
     if (range.value.start) params.start_date = range.value.start
     if (range.value.end) params.end_date = range.value.end
     summary.value = await getReportSummary(params)
@@ -76,6 +77,10 @@ onMounted(load)
         <p class="muted">基于已导入账单的收支统计；纯本地聚合，不经过模型。</p>
       </div>
       <div class="head-actions">
+        <select v-model="mode" class="select" @change="load">
+          <option value="consumption">消费统计（扣除已知退款）</option>
+          <option value="raw">原始收支流水</option>
+        </select>
         <input v-model="range.start" type="date" class="input date-input" title="开始日期" />
         <span class="muted">至</span>
         <input v-model="range.end" type="date" class="input date-input" title="结束日期" />
@@ -88,18 +93,19 @@ onMounted(load)
     <div v-else-if="loading && !summary" class="card empty">加载中…</div>
 
     <template v-else-if="summary">
+      <div class="card"><p v-for="warning in summary.warnings" :key="warning" class="muted">{{ warning }}</p></div>
       <!-- 汇总卡片 -->
       <div class="metric-grid">
         <div class="card metric">
-          <span class="metric-label">总支出</span>
+          <span class="metric-label">{{ summary.mode === 'consumption' ? '消费净支出' : '原始支出流水' }}</span>
           <span class="metric-num">¥{{ summary.total_expense }}</span>
         </div>
         <div class="card metric">
-          <span class="metric-label">总收入</span>
+          <span class="metric-label">收入流水</span>
           <span class="metric-num income">¥{{ summary.total_income }}</span>
         </div>
         <div class="card metric">
-          <span class="metric-label">净结余</span>
+          <span class="metric-label">{{ summary.mode === 'consumption' ? '收入流水减消费（非账户结余）' : '流水收支差额' }}</span>
           <span class="metric-num">{{ (summary.total_income_cents - summary.total_expense_cents) >= 0 ? "¥" : "-¥"
             }}{{ ((summary.total_income_cents - summary.total_expense_cents) / 100).toFixed(2).replace("-", "") }}</span>
         </div>

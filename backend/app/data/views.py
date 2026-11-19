@@ -14,7 +14,10 @@ def bill_view(bill: Bill):
             'product': bill.product, 'payment_method': bill.payment_method,
             'transaction_status': bill.transaction_status, 'note': bill.note,
             'category_source': bill.category_source, 'category_confidence': bill.category_confidence,
-            'category': bill.category, 'source': bill.source}
+            'category': bill.category, 'source': bill.source,
+            'account': bill.account, 'nature': bill.nature,
+            'category_status': bill.category_status, 'category_reason': bill.category_reason,
+            'refund_cents': bill.refund_cents}
 
 
 def card_view(card: TrackingCard):

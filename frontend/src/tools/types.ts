@@ -89,6 +89,11 @@ export interface BillRow {
   category_confidence: number
   category: string
   source: string
+  account?: string
+  nature?: string
+  category_status?: string
+  category_reason?: string
+  refund_cents?: number
 }
 
 export interface QueryBillData {

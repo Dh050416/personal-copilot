@@ -19,7 +19,7 @@ async def test_classifier_keeps_transfer_unclassified_and_accepts_valid_model_la
     rows = [
         {'merchant': '某人', 'product': '转账', 'transaction_type': '转账', 'direction': 'expense',
          'category': '其他', 'category_source': 'unclassified', 'category_confidence': 0},
-        {'merchant': '未知商户', 'product': '商品', 'transaction_type': '商户消费', 'direction': 'expense',
+        {'merchant': '未知商户', 'product': '电动牙刷', 'transaction_type': '商户消费', 'direction': 'expense',
          'category': '其他', 'category_source': 'unclassified', 'category_confidence': 0},
         {'merchant': '用户确认', 'product': '', 'transaction_type': '商户消费', 'direction': 'expense',
          'category': '餐饮', 'category_source': 'user', 'category_confidence': 1},
@@ -34,7 +34,7 @@ async def test_classifier_keeps_transfer_unclassified_and_accepts_valid_model_la
 
 
 def raw_row(**changes):
-    return dict({'merchant': '未知店', 'product': '商品', 'transaction_type': '商户消费',
+    return dict({'merchant': '未知店', 'product': '电动牙刷', 'transaction_type': '商户消费',
                  'direction': 'expense', 'category': '其他', 'category_source': 'unclassified',
                  'category_confidence': 0}, **changes)
 

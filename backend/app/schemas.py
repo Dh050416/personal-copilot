@@ -43,6 +43,8 @@ class ResumeRequest(StrictModel):
 
 
 class QueryBillArgs(StrictModel):
+    accounting_mode: Literal['raw', 'consumption'] = Field(default='raw', description=
+        '消费或实际花费统计用consumption（只含消费并扣除已知退款）；查询转账、退款或原始流水用raw。明细金额仍是原始金额。')
     start_date: date | None = None
     end_date: date | None = None
     category: str | None = Field(default=None, max_length=64)
@@ -68,6 +70,8 @@ class QueryBillArgs(StrictModel):
 
     @model_validator(mode='after')
     def ordered_dates(self):
+        if self.accounting_mode == 'consumption' and self.direction not in ('expense', None):
+            raise ValueError('消费统计仅支持支出方向')
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValueError('start_date 不能晚于 end_date')
         if self.min_amount is not None and self.max_amount is not None:
@@ -319,6 +323,11 @@ class BillView(StrictModel):
     category_confidence: float
     category: str
     source: str
+    account: str = 'default'
+    nature: str = 'unknown'
+    category_status: str = 'pending'
+    category_reason: str = ''
+    refund_cents: int = 0
 
 
 class QueryBillResult(StrictModel):
@@ -504,3 +513,5 @@ class ReportSummary(StrictModel):
     total_income_cents: int
     categories: list[ReportCategoryItem]
     monthly: list[ReportMonthItem]
+    mode: str = 'raw'
+    warnings: list[str] = Field(default_factory=list)

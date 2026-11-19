@@ -283,8 +283,10 @@ async def test_cache_hit_still_records_last_query(ctx):
         tool_call_message('query_bill', {'category': '餐饮'}, 'call-q2'),
         AIMessage(content='完成。'),
     ]))
+    # Explicitly opt in for the graph-cache contract test. Production bill reads are uncached
+    # so imports and classification/refund edits are immediately visible.
     graph = make_graph(llm, ctx['tools'], WRITE_TOOLS, MemorySaver(),
-                       tool_cache=ToolResultCache(ttl=60), cacheable_tools=CACHEABLE_TOOLS)
+                       tool_cache=ToolResultCache(ttl=60), cacheable_tools=CACHEABLE_TOOLS | {'query_bill'})
     result = await run_to_end(graph, initial_input('c-5', '查账单'),
                               {'configurable': {'thread_id': 'c-5'}})
     results = [e['payload']['result'] for e in result['events'] if e['type'] == 'tool_result']

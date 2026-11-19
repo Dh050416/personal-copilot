@@ -5,7 +5,7 @@ import { addBill } from "../services/agentClient"
 
 const store = useSessionStore()
 
-const CATEGORIES = ["餐饮", "交通", "购物", "订阅", "医疗", "住房", "教育", "其他"] as const
+const CATEGORIES = ["餐饮", "交通", "购物", "订阅", "医疗", "住房", "教育", "住宿", "娱乐", "生活服务", "数码服务", "其他"] as const
 
 const open = ref(false)
 const saving = ref(false)

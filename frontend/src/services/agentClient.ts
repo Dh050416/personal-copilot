@@ -168,7 +168,7 @@ async function postJson(path: string, body: unknown): Promise<Response> {
 }
 
 /** 带鉴权的通用 fetch：自动附加 Bearer，401 时清凭证并跳登录。 */
-async function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+export async function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const response = await fetch(url, {
     ...init,
     headers: { ...authHeaders(), ...(init.headers || {}) },
@@ -491,16 +491,20 @@ export interface ReportSummary {
   total_income_cents: number
   categories: ReportCategoryItem[]
   monthly: ReportMonthItem[]
+  mode: string
+  warnings: string[]
 }
 
 /** 获取消费报表汇总（可选日期区间，闭区间） */
 export async function getReportSummary(params: {
   start_date?: string
   end_date?: string
+  mode?: string
 } = {}): Promise<ReportSummary> {
   const qs = new URLSearchParams()
   if (params.start_date) qs.set("start_date", params.start_date)
   if (params.end_date) qs.set("end_date", params.end_date)
+  if (params.mode) qs.set("mode", params.mode)
   const url = `${API_BASE}/api/reports/summary${qs.toString() ? `?${qs.toString()}` : ""}`
   const response = await authedFetch(url)
   if (!response.ok) throw new Error(`报表查询失败（HTTP ${response.status}）`)

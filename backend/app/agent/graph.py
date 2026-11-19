@@ -69,6 +69,8 @@ PROCESS_SKILLS = {
         '- 大于/超过100元：min_amount=100 且 min_amount_inclusive=false；至少100元保持 true。\n'
         '- 金额单位为元，最多两位小数；日期明确到某天时 start_date=end_date。\n'
         '- 未说明方向默认支出，但查看全部收支或退款记录应 direction=null。\n'
+        '- 统计消费/实际花费使用 accounting_mode=consumption，排除资金划转并扣除已知退款；'
+        '查看原始流水、转账或退款使用 raw，说明统计口径，明细金额始终是原始金额。\n'
         '- 用户说「只要…」「再筛…」「加上…」等补充条件时，默认在【当前对话记忆】标明的'
         '最近查询范围内二次筛选；只有用户明确要求新的时间范围或重新查询时才发起新的全量查询。\n'
         '- 【随手记】用户要「记一笔/随手记/手动添加一笔」刚发生的消费或转账（没有账单文件可导入）时，'
@@ -266,6 +268,8 @@ def _query_memo_text(last_query, expired: bool = False):
         parts.append(f"商户={filters['merchant']}")
     if filters.get('direction'):
         parts.append(f"方向={filters['direction']}")
+    if filters.get('accounting_mode'):
+        parts.append('口径=' + ('消费净额' if filters['accounting_mode'] == 'consumption' else '原始流水'))
     if filters.get('min_amount') is not None:
         parts.append(f"金额≥{filters['min_amount']}")
     if filters.get('max_amount') is not None:

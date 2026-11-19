@@ -66,7 +66,7 @@ class User(Base):
 
 class Bill(Base):
     __tablename__ = 'bills'
-    __table_args__ = (UniqueConstraint('user_id', 'source', 'tx_no'),)
+    __table_args__ = (UniqueConstraint('user_id', 'source', 'account', 'tx_no', name='uq_bill_identity'),)
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
     tx_no: Mapped[str] = mapped_column(String(128))
@@ -89,6 +89,11 @@ class Bill(Base):
     import_batch_id: Mapped[str] = mapped_column(String(64))
     source_sheet: Mapped[str] = mapped_column(String(128))
     source_row: Mapped[int]
+    account: Mapped[str] = mapped_column(String(80), default='default', server_default='default')
+    nature: Mapped[str] = mapped_column(String(32), default='unknown', server_default='unknown')
+    category_status: Mapped[str] = mapped_column(String(24), default='pending', server_default='pending')
+    category_reason: Mapped[str] = mapped_column(Text, default='', server_default='')
+    refund_cents: Mapped[int] = mapped_column(BigInteger, default=0, server_default='0')
 
 
 class ImportBatch(Base):
@@ -98,6 +103,57 @@ class ImportBatch(Base):
     filename: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     report_json: Mapped[str] = mapped_column(Text)
+
+
+class BillImportJob(Base):
+    __tablename__ = 'bill_import_jobs'
+    __table_args__ = (UniqueConstraint('user_id', 'account', 'file_hash', name='uq_bill_import_file'),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    account: Mapped[str] = mapped_column(String(80))
+    filename: Mapped[str] = mapped_column(String(255))
+    file_hash: Mapped[str] = mapped_column(String(64))
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    status: Mapped[str] = mapped_column(String(24), default='queued', index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    owner: Mapped[str] = mapped_column(String(32), default='')
+    error: Mapped[str] = mapped_column(Text, default='')
+    result_json: Mapped[str] = mapped_column(Text, default='{}')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class BillImportRow(Base):
+    __tablename__ = 'bill_import_rows'
+    job_id: Mapped[str] = mapped_column(ForeignKey('bill_import_jobs.id', ondelete='CASCADE'), primary_key=True)
+    row_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data_json: Mapped[str] = mapped_column(Text)
+    error: Mapped[str] = mapped_column(Text, default='')
+    disposition: Mapped[str] = mapped_column(String(24), default='new')
+    excluded: Mapped[bool] = mapped_column(default=False)
+
+
+class BillCategoryRule(Base):
+    __tablename__ = 'bill_category_rules'
+    __table_args__ = (UniqueConstraint('user_id', 'platform', 'account', 'merchant', 'product',
+                                     'transaction_type', name='uq_bill_category_rule'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    platform: Mapped[str] = mapped_column(String(32))
+    account: Mapped[str] = mapped_column(String(80))
+    merchant: Mapped[str] = mapped_column(String(255))
+    product: Mapped[str] = mapped_column(String(500))
+    transaction_type: Mapped[str] = mapped_column(String(64))
+    category: Mapped[str] = mapped_column(String(64))
+
+
+class BillRefundLink(Base):
+    __tablename__ = 'bill_refund_links'
+    refund_bill_id: Mapped[int] = mapped_column(ForeignKey('bills.id'), primary_key=True)
+    original_bill_id: Mapped[int] = mapped_column(ForeignKey('bills.id'), index=True)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    basis: Mapped[str] = mapped_column(Text)
 
 
 class TrackingCard(Base):

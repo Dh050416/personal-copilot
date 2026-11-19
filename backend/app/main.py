@@ -22,6 +22,8 @@ from sqlalchemy import select
 from app.agent.graph import ToolResultCache, make_graph
 from app.agent.tools import CACHEABLE_TOOLS, OUTPUT_SCHEMAS, WRITE_TOOLS, build_tools
 from app.api.auth import router as auth_router
+from app.api.bill_imports import router as bill_imports_router
+from app.api.bill_refunds import router as bill_refunds_router
 from app.api.bills import router as bills_router
 from app.api.cards import router as cards_router
 from app.api.chat import router as chat_router
@@ -159,6 +161,8 @@ app.add_middleware(RequestIdMiddleware)
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(bills_router)
+app.include_router(bill_imports_router)
+app.include_router(bill_refunds_router)
 app.include_router(cards_router)
 app.include_router(events_router)
 app.include_router(memory_router)
