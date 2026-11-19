@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
             tool_cache = RedisToolResultCache(redis_client, settings.tool_result_cache_ttl)
         else:
             tool_cache = ToolResultCache(settings.tool_result_cache_ttl)
-    # RAG 知识库 embedding client（本地 ollama bge-m3，与 chat 模型独立配置）
+    # RAG embedding client（Qwen3-VL 4096 维，与 chat 模型独立配置）
     # 必须在 build_tools 之前创建：search_knowledge 工具依赖它做 query 向量化
     from app.services.knowledge.embedding import EmbeddingClient
     embedding_client = EmbeddingClient(

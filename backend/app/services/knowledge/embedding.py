@@ -37,7 +37,7 @@ class EmbeddingClient:
         self._batch_size = batch_size
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """批量向量化，返回与输入等长、同序的向量列表（每个 1024 维）。"""
+        """批量向量化，返回与输入等长、同序的向量列表（每个 4096 维）。"""
         if not texts:
             return []
         vectors: list[list[float]] = []

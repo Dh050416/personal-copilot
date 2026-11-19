@@ -31,10 +31,8 @@ class Settings(BaseSettings):
     model_name: str = 'qwen3:8b'
     allow_cloud_model: bool = False
     # ----- RAG embedding（向量化）配置：与 chat 模型完全独立 -----
-    # 默认指向本地 ollama 的 bge-m3（1024 维，与 knowledge_chunks.embedding 维度一致）。
-    # embedding 调用频繁且涉及文档内容隐私，本地跑免费且数据不出本机；
-    # chat 模型（上面 MODEL_*）可独立切 DeepSeek 等云端，两者互不影响。
-    # 注意：Windows 本机用 127.0.0.1 而非 localhost（IPv6 解析坑）。
+    # 默认使用硅基流动 Qwen3-VL Embedding，4096 维，与当前数据库向量列一致。
+    # EMBEDDING_API_KEY 与聊天模型 MODEL_API_KEY 独立配置；文档内容会发送至该服务。
     embedding_base_url: str = 'https://api.siliconflow.cn/v1'
     embedding_model_name: str = 'Qwen/Qwen3-VL-Embedding-8B'
     embedding_revision: str = 'v1'  # Change whenever weights or embedding preprocessing change.
