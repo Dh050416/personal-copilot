@@ -1,0 +1,51 @@
+# Optional storage for a fresh server. Use together with docker-compose.yml.
+# POSTGRES_PASSWORD must be set in root .env; use openssl rand -hex 24 so it is URL-safe.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: PersonManager
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in root .env first}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d PersonManager"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # Only reachable inside the Compose network; no public database port.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/PersonManager
+      CHECKPOINT_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/PersonManager
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  bill-worker:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/PersonManager
+      CHECKPOINT_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/PersonManager
+      REDIS_URL: redis://redis:6379/0
+
+volumes:
+  postgres_data:
+  redis_data:
