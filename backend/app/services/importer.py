@@ -1,7 +1,6 @@
-"""Excel ingestion is deterministic and never invokes an LLM."""
+"""CSV/XLSX extraction and strict field validation used by the pandas staging pipeline."""
 import csv
 import io
-import json
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -183,7 +182,3 @@ def parse_file(content: bytes, filename: str, source: str):
     else:
         raise ValueError('只支持 .xlsx 或 .csv')
     return {'rows': valid, 'errors': errors, 'status': 'preview'}
-
-
-def serialize(data):
-    return json.dumps(data, ensure_ascii=False)

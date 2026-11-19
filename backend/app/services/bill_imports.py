@@ -12,8 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select, text
 
 from app.data.models import Bill, BillCategoryRule, BillImportJob, BillImportRow, ImportBatch, now_utc
-from app.services.bill_pipeline import rule_key, stage_file
-from app.services.bill_service import CORE_FIELDS, RAW_FIELDS, is_missing
+from app.services.bill_pipeline import CORE_FIELDS, RAW_FIELDS, is_missing, rule_key, stage_file
 from app.services.classification import BillClassifier, has_classification_evidence
 
 log = logging.getLogger(__name__)

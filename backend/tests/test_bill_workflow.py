@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from app.api.bill_imports import router as imports_router
 from app.api.bill_refunds import router as refunds_router
+from app.api.bills import router as bills_router
 from app.api.reports import router as reports_router
 from app.config import Settings
 from app.data.models import Bill, BillCategoryRule, BillImportJob, BillImportRow, now_utc
@@ -46,6 +47,7 @@ async def client(db):
         return await call_next(request)
 
     app.include_router(imports_router)
+    app.include_router(bills_router)
     app.include_router(refunds_router)
     app.include_router(reports_router)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as c:
@@ -195,3 +197,38 @@ async def test_legacy_migration_is_explicit_and_preserves_human_category(db, cli
     async with db.sessions() as session:
         bills = list(await session.scalars(select(Bill)))
         assert len(bills) == 1 and bills[0].source == 'wechat' and bills[0].category_source == 'user'
+
+
+async def test_retired_import_routes_are_not_exposed(client):
+    for path in ('preview', 'import', 'classify'):
+        response = await client.post(f'/api/bills/{path}')
+        assert response.status_code == 404
+
+
+async def test_review_keeps_later_human_edit_and_enriches_missing_fields(db, client, monkeypatch):
+    first = await processed(db, csv_file(row()), monkeypatch)
+    await confirm_job(db, 1, first, False)
+    second = await processed(db, csv_file(row(), row('002')), monkeypatch)
+    await client.post(f'/api/bills/imports/{second}/rows', json={'row_ids': [1], 'category': '餐饮'})
+    async with db.sessions() as session, session.begin():
+        bill = await session.scalar(select(Bill))
+        bill_id = bill.id
+        bill.transaction_status = '未知'
+    assert (await client.post(f'/api/bills/{bill_id}/category', json={
+        'category': '教育', 'confirmed': True})).status_code == 200
+    result = await confirm_job(db, 1, second, False)
+    assert result['result']['inserted'] == 1 and result['result']['enriched'] == 1
+    async with db.sessions() as session:
+        bill = await session.get(Bill, bill_id)
+        assert bill.category == '教育' and bill.category_source == 'user'
+        assert bill.transaction_status == '支付成功'
+
+
+async def test_conflicting_overlap_never_overwrites_original(db, client, monkeypatch):
+    first = await processed(db, csv_file(row()), monkeypatch)
+    await confirm_job(db, 1, first, False)
+    second = await processed(db, csv_file(row(amount='99.00')), monkeypatch)
+    assert (await client.post(f'/api/bills/imports/{second}/confirm', json={})).status_code == 409
+    async with db.sessions() as session:
+        assert await session.scalar(select(func.count(Bill.id))) == 1
+        assert (await session.scalar(select(Bill))).amount_cents == 1000

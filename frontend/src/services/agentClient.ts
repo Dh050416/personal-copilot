@@ -1,7 +1,7 @@
 /**
  * 后端交互客户端：所有网络调用集中在这一层。
  * - SSE 解析（/api/chat 与 /api/runs/{id}/resume）
- * - Excel 导入 / 批量分类 / 人工分类确认
+ * - 人工分类确认（文件导入任务见 billImports.ts）
  * 组件不直接接触 fetch，后续更换基址、加鉴权或重试只需改这里。
  */
 import type { AgentEvent } from "../tools/types"
@@ -209,33 +209,6 @@ export async function resume(
   })
   if (!response.ok) throw new Error(`审批恢复失败（HTTP ${response.status}）`)
   await consume(response, onEvent)
-}
-
-/** 上传 Excel/CSV 并导入分类 */
-export async function importBills(file: File): Promise<unknown> {
-  const body = new FormData()
-  body.append("file", file)
-  const response = await authedFetch(`${API_BASE}/api/bills/import`, {
-    method: "POST",
-    body,
-  })
-  const report = (await response.json()) as unknown
-  if (!response.ok) {
-    const detail = (report as { detail?: string })?.detail
-    throw new Error(detail || "导入失败")
-  }
-  return report
-}
-
-/** 批量分类已有未分类账单 */
-export async function classifyExisting(limit = 200): Promise<unknown> {
-  const response = await postJson("/api/bills/classify", { limit })
-  const report = (await response.json()) as unknown
-  if (!response.ok) {
-    const detail = (report as { detail?: string })?.detail
-    throw new Error(detail || "分类失败")
-  }
-  return report
 }
 
 /** 人工确认账单分类（后端保证不会被后续导入/模型覆盖） */

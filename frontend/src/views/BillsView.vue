@@ -97,10 +97,6 @@ function quickQuery(text: string): void {
   flex-wrap: wrap;
 }
 
-.hidden-input {
-  display: none;
-}
-
 .quick-row {
   display: flex;
   align-items: center;
@@ -115,38 +111,6 @@ function quickQuery(text: string): void {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-2);
-}
-
-.import-area {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px dashed var(--border);
-}
-
-.import-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.import-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.report {
-  margin: 0;
-  background: var(--surface-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 12px;
-  font-size: 12px;
-  max-height: 260px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .empty-card {

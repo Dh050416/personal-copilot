@@ -17,8 +17,7 @@ from app.services.bill_imports import (
     job_view,
     owned,
 )
-from app.services.bill_pipeline import group_rows, rule_key
-from app.services.bill_service import CORE_FIELDS
+from app.services.bill_pipeline import CORE_FIELDS, group_rows, rule_key
 from app.services.classification import CATEGORIES
 
 router = APIRouter(prefix='/api/bills/imports', tags=['bill imports'])

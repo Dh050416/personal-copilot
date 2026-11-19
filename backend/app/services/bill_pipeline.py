@@ -7,6 +7,14 @@ import pandas as pd
 
 from app.services.importer import parse_amount, parse_file
 
+CORE_FIELDS = ('tx_time', 'amount_cents', 'direction', 'merchant')
+RAW_FIELDS = ('transaction_type', 'payment_method', 'transaction_status', 'merchant_tx_no', 'note', 'product')
+
+
+def is_missing(value):
+    return value in (None, '', '/', '未知')
+
+
 GENERIC = {'', '/', '商品', '扫码付款', '收款方备注:二维码收款', '转账备注:微信转账',
            '费用', '微信支付', '先用后付', '支付', '二维码收款'}
 

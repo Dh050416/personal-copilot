@@ -364,10 +364,6 @@ class ConfirmBillCategory(StrictModel):
     confirmed: Literal[True]
 
 
-class ClassifyBillsRequest(StrictModel):
-    limit: int = Field(default=200, ge=1, le=1000, strict=True)
-
-
 class CardView(StrictModel):
     id: int
     bill_id: int | None

@@ -75,7 +75,7 @@ frontend/src/
   views/       ChatView / BoardView / BillsView / CalendarView
                ReportsView / SettingsView / KnowledgeView / LoginView
   components/  AppHeader（220px 侧栏）/ ChatPanel / TaskBoard / BillTable / ApprovalCard
-               SessionList / ImportPanel
+               SessionList / BillImportPanel
   stores/      session.ts   事件流统一分发
   services/    agentClient.ts   SSE 解析与 API（含知识库接口）
   tools/       registry.ts      工具结果按注册表提取，新增工具不改主流程
@@ -348,7 +348,8 @@ python -m evals --json-out results.json   # 跨版本比对的机器可读结果
 
 ## 建议的第一轮实验
 
-先生成示例账单并在前端导入（或用你自己的 `.xlsx`），然后按顺序观察：
+先启动独立账单 Worker（`cd backend` 后执行 `python -m app.bill_worker`），
+在账单页上传示例文件或自己的 `.xlsx`，预览并确认入库后，按顺序观察：
 
 1. 发送「查询账单」，观察 `stream` → `arguments_validated` → `tool_result` 事件流。
 2. 发送「把最近一笔餐饮做成报销卡」，观察 `approval_created` 与 SSE 暂停。
@@ -357,7 +358,8 @@ python -m evals --json-out results.json   # 跨版本比对的机器可读结果
 5. 执行中**再发一条消息**，观察它被排队并在下一个检查点注入（不打断当前步骤）。
 6. 发送「只要超过 100 元的」，观察它是在最近一次查询范围内二次筛选，而不是重新全量查询。
 7. 用 `python scripts/gen_sample_bills.py --no-category` 生成不带分类的账单并导入，
-   再调用 `POST /api/bills/classify`，观察规则 + 真实模型的分类结果。
+   在导入预览中观察规则与模型的分类建议，按组确认分类后入库；
+   需要继续分类时使用任务的“继续处理待确认记录”，所有文件导入统一走 `/api/bills/imports`。
 
 账单查询支持日期/自然日、收支方向、消费分类、商户或转账对方、原始交易类型、
 金额上下界、支付方式和交易状态。人工分类（`POST /api/bills/{id}/category`）

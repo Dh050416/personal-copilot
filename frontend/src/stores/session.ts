@@ -48,7 +48,6 @@ export const useSessionStore = defineStore("session", () => {
   const approval = ref<ApprovalState | null>(null)
   const renderSlots = ref<Record<string, unknown>>({})
   const lastResult = ref<ToolExecutionEnvelope | null>(null)
-  const importMessage = ref("")
   /** 会话级对话历史：跨路由、跨轮保留（组件卸载不丢）；「新对话」才清空 */
   const chatTurns = ref<ChatTurn[]>([])
   /** 会话列表（含当前会话），localStorage 持久化 */
@@ -347,7 +346,6 @@ export const useSessionStore = defineStore("session", () => {
     approval,
     renderSlots,
     lastResult,
-    importMessage,
     sessionId,
     chatTurns,
     sessions,
