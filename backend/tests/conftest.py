@@ -9,13 +9,13 @@
    每个测试前清空重建全部表（等价于旧 SQLite 临时库的隔离效果）。
 """
 import pytest
+from sqlalchemy.pool import NullPool
 
-from app.agent.tools import _USER_ID
 from app.auth import load_or_create_secret, sign_token
 from app.config import Settings
 from app.data.db import Database
 from app.data.models import Base
-from sqlalchemy.pool import NullPool
+from app.tools.context import _USER_ID
 
 # 测试统一使用的用户 id，seed 数据与工具查询都指向它。
 TEST_USER_ID = 1

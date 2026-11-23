@@ -144,7 +144,7 @@ async def test_refund_link_does_not_double_count_and_checks_ownership(db, client
     assert (await client.post(path, json={'original_bill_id': original_id})).status_code == 200
     data = (await client.get('/api/reports/summary?mode=consumption')).json()
     assert data['total_expense_cents'] == 800 and data['total_income_cents'] == 0
-    from app.agent.tools import build_tools
+    from app.tools import build_tools
     query = next(t for t in build_tools(db) if t.name == 'query_bill')
     message = await query.arun({'accounting_mode': 'consumption'}, tool_call_id='refund-query')
     assert message.artifact.total == '8.00' and message.artifact.items[0].amount == '10.00'

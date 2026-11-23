@@ -8,9 +8,9 @@ from pydantic import PrivateAttr
 from sqlalchemy import select
 
 from app.agent.graph import build_system_message, initial_input, make_graph
-from app.agent.tools import WRITE_TOOLS, build_tools
 from app.api.chat import _trim_history
 from app.data.models import AgentMemory
+from app.tools import WRITE_TOOLS, build_tools
 
 
 class RecordingChatModel(GenericFakeChatModel):

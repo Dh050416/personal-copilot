@@ -31,9 +31,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
-from app.agent.tools import _IDEMPOTENCY_KEY, _USER_ID
 from app.data.models import now_iso
 from app.errors import ToolError
+from app.tools.context import _IDEMPOTENCY_KEY, _USER_ID
 
 # ---------- 提示词分层：铁律常驻 + 流程 Skill 按需注入 ----------
 

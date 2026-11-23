@@ -12,12 +12,12 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from app.agent.graph import initial_input
-from app.agent.tools import _USER_ID
 from app.logging_config import REQUEST_ID
 from app.middleware import get_request_id
 from app.observability import langfuse_callbacks
 from app.schemas import ChatRequest, ResumeRequest
 from app.services.summary import is_summarizable
+from app.tools.context import _USER_ID
 
 router = APIRouter(prefix='/api', tags=['chat'])
 logger = logging.getLogger(__name__)

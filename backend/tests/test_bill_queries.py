@@ -1,8 +1,8 @@
 """账单查询数据等价测试（LangChain 工具直调）。"""
 import pytest
 
-from app.agent.tools import build_tools
 from app.data.models import Bill
+from app.tools import build_tools
 from tests.conftest import TEST_USER_ID
 
 

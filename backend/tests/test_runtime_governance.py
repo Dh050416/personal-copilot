@@ -17,8 +17,8 @@ from langgraph.types import Command
 from pydantic import PrivateAttr
 
 from app.agent.graph import initial_input, make_graph
-from app.agent.tools import WRITE_TOOLS, build_tools
 from app.main import app
+from app.tools import WRITE_TOOLS, build_tools
 
 
 @pytest.fixture
@@ -278,7 +278,7 @@ def test_approval_within_ttl_resumes_ok(ctx, auth_headers):
 @pytest.mark.asyncio
 async def test_output_schema_valid_passes(ctx):
     """输出契约校验：合法输出通过统一出口校验，artifact 为校验后的 JSON。"""
-    from app.agent.tools import OUTPUT_SCHEMAS
+    from app.tools import OUTPUT_SCHEMAS
 
     llm = FakeChatModel(messages=iter([
         tool_call_message('query_bill', {'category': '餐饮'}),

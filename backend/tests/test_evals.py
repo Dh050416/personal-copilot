@@ -13,7 +13,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk
 
-from app.agent.tools import OUTPUT_SCHEMAS, WRITE_TOOLS
+from app.tools import OUTPUT_SCHEMAS, WRITE_TOOLS
 from evals.dataset import CASES, SEEDS, Expect, find
 from evals.harness import CaseRun, TurnRun, run_case
 from evals.metrics import aggregate, score

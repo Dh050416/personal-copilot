@@ -162,7 +162,7 @@ python scripts/gen_sample_bills.py     # 生成 samples/sample_bills.xlsx
 | `TOOL_RETRIES` | 2 | 工具执行失败自动重试次数（指数退避）；只重试瞬时错误（超时/显式 retryable），参数校验与业务失败不重试；重试复用同一 tool call id → 幂等键不变 → 写工具查重兜底不重复建卡；0=禁用 |
 | `APPROVAL_TTL_SECONDS` | 86400 | 审批有效期：过期后 `approve` 返回 410；点「拒绝」可放弃该操作并让会话恢复，或新建会话重新发起 |
 
-工具层还有一个不依赖配置的硬治理：**输出契约校验**。每个工具在 `app/agent/tools.py` 的
+工具层还有一个不依赖配置的硬治理：**输出契约校验**。每个工具在 `app/tools/registry.py` 的
 `OUTPUT_SCHEMAS` 声明输出结构，`run_tools` 在统一出口用 Pydantic 对 artifact 二次校验，
 契约漂移/脏数据转 `OUTPUT_INVALID` 结构化错误（stage=output，结果不进状态/前端/记忆），
 不会静默流入下游。

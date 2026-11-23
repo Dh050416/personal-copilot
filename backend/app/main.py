@@ -20,7 +20,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import select
 
 from app.agent.graph import ToolResultCache, make_graph
-from app.agent.tools import CACHEABLE_TOOLS, OUTPUT_SCHEMAS, WRITE_TOOLS, build_tools
 from app.api.auth import router as auth_router
 from app.api.bill_imports import router as bill_imports_router
 from app.api.bill_refunds import router as bill_refunds_router
@@ -39,6 +38,7 @@ from app.logging_config import setup_logging
 from app.middleware import REQUEST_ID_HEADER, RequestIdMiddleware, get_request_id
 from app.observability import flush as langfuse_flush
 from app.observability import init_langfuse
+from app.tools import CACHEABLE_TOOLS, OUTPUT_SCHEMAS, WRITE_TOOLS, build_tools
 
 # 应用导入期就装好 JSON 日志（脚本 / pytest 入口不经过 uvicorn）。
 # uvicorn 启动时会用 dictConfig 覆盖 logging，故 lifespan 里再装一次，保证两种入口一致。

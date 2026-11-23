@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.agent.tools import WRITE_TOOLS
+from app.tools import WRITE_TOOLS
 from evals.dataset import Case
 from evals.harness import CaseRun
 
