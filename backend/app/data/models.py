@@ -1,7 +1,24 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Identity,
+    Index,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -283,5 +300,192 @@ class KnowledgeChunk(Base):
     heading_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding: Mapped[Vector] = mapped_column(Vector(4096))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class _PersonalOwned:
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+
+
+class _PersonalTimestamps:
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class PersonalGoal(_PersonalOwned, _PersonalTimestamps, Base):
+    __tablename__ = 'personal_goals'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'id', name='uq_personal_goal_owner'),
+        Index('ix_personal_goal_owner_updated', 'user_id', 'updated_at'),
+        CheckConstraint("progress_style IN ('water','route','plant')", name='ck_personal_goal_style'),
+        CheckConstraint(
+            "(progress_mode = 'metric' AND unit IS NOT NULL AND target_value IS NOT NULL "
+            "AND target_value > 0 AND current_value IS NOT NULL AND current_value >= 0 AND manual_percent IS NULL) "
+            "OR (progress_mode = 'manual' AND manual_percent IS NOT NULL AND manual_percent BETWEEN 0 AND 100 "
+            "AND unit IS NULL AND target_value IS NULL AND current_value IS NULL) "
+            "OR (progress_mode = 'milestone' AND unit IS NULL AND target_value IS NULL "
+            "AND current_value IS NULL AND manual_percent IS NULL)",
+            name='ck_personal_goal_progress_fields',
+        ),
+    )
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    success_criteria: Mapped[str | None] = mapped_column(Text)
+    target_date: Mapped[date | None]
+    progress_mode: Mapped[str] = mapped_column(String(16))
+    progress_style: Mapped[str] = mapped_column(String(16))
+    unit: Mapped[str | None] = mapped_column(String(32))
+    target_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    current_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    manual_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(default=1)
+
+
+class PersonalGoalMilestone(_PersonalOwned, _PersonalTimestamps, Base):
+    __tablename__ = 'personal_goal_milestones'
+    __table_args__ = (
+        ForeignKeyConstraint(['user_id', 'goal_id'], ['personal_goals.user_id', 'personal_goals.id']),
+        UniqueConstraint('user_id', 'goal_id', 'id', name='uq_personal_milestone_owner'),
+        Index('ix_personal_milestone_goal_position', 'user_id', 'goal_id', 'position'),
+    )
+    goal_id: Mapped[int] = mapped_column(BigInteger)
+    title: Mapped[str] = mapped_column(String(255))
+    position: Mapped[int]
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PersonalGoalProgressEntry(_PersonalOwned, Base):
+    __tablename__ = 'personal_goal_progress_entries'
+    __table_args__ = (
+        ForeignKeyConstraint(['user_id', 'goal_id'], ['personal_goals.user_id', 'personal_goals.id']),
+        ForeignKeyConstraint(
+            ['user_id', 'goal_id', 'milestone_id'],
+            ['personal_goal_milestones.user_id', 'personal_goal_milestones.goal_id', 'personal_goal_milestones.id'],
+        ),
+        UniqueConstraint('user_id', 'goal_id', 'request_key', name='uq_personal_progress_request'),
+        Index('ix_personal_progress_goal_time', 'user_id', 'goal_id', 'occurred_at'),
+        Index('ix_personal_progress_owner_time', 'user_id', 'occurred_at'),
+        CheckConstraint(
+            "entry_type IN ('initial','metric','manual','milestone','target_change','mode_change')",
+            name='ck_personal_progress_type',
+        ),
+    )
+    goal_id: Mapped[int] = mapped_column(BigInteger)
+    milestone_id: Mapped[int | None] = mapped_column(BigInteger)
+    entry_type: Mapped[str] = mapped_column(String(24))
+    before_data: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    after_data: Mapped[dict] = mapped_column(JSONB)
+    note: Mapped[str | None] = mapped_column(Text)
+    request_key: Mapped[str] = mapped_column(String(64))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class PersonalReview(_PersonalOwned, _PersonalTimestamps, Base):
+    __tablename__ = 'personal_reviews'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'id', name='uq_personal_review_owner'),
+        UniqueConstraint('user_id', 'period_kind', 'period_start', name='uq_personal_review_period'),
+        CheckConstraint("period_kind IN ('week','month')", name='ck_personal_review_kind'),
+        CheckConstraint("status IN ('draft','saved')", name='ck_personal_review_status'),
+        CheckConstraint('period_start < period_end', name='ck_personal_review_period'),
+    )
+    period_kind: Mapped[str] = mapped_column(String(8))
+    period_start: Mapped[date]
+    period_end: Mapped[date]
+    timezone: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16))
+    user_notes: Mapped[str] = mapped_column(Text)
+    source_snapshot: Mapped[dict] = mapped_column(JSONB)
+    ai_draft: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    final_text: Mapped[str | None] = mapped_column(Text)
+    saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(default=1)
+
+
+class PersonalTask(_PersonalOwned, _PersonalTimestamps, Base):
+    __tablename__ = 'personal_tasks'
+    __table_args__ = (
+        ForeignKeyConstraint(['user_id', 'goal_id'], ['personal_goals.user_id', 'personal_goals.id']),
+        ForeignKeyConstraint(['user_id', 'origin_review_id'], ['personal_reviews.user_id', 'personal_reviews.id']),
+        UniqueConstraint('user_id', 'id', name='uq_personal_task_owner'),
+        UniqueConstraint('user_id', 'origin_review_id', 'origin_action_key', name='uq_personal_task_review_action'),
+        Index('ix_personal_task_owner_status_updated', 'user_id', 'board_status', 'updated_at'),
+        Index('ix_personal_task_owner_due', 'user_id', 'due_at'),
+        CheckConstraint("board_status IN ('inbox','todo','doing','done')", name='ck_personal_task_status'),
+        CheckConstraint("(board_status = 'done') = (completed_at IS NOT NULL)", name='ck_personal_task_completion'),
+        CheckConstraint(
+            "NOT is_waiting OR (board_status IN ('todo','doing') AND archived_at IS NULL)",
+            name='ck_personal_task_waiting',
+        ),
+        CheckConstraint(
+            '(origin_review_id IS NULL) = (origin_action_key IS NULL)', name='ck_personal_task_review_action',
+        ),
+    )
+    goal_id: Mapped[int | None] = mapped_column(BigInteger)
+    origin_review_id: Mapped[int | None] = mapped_column(BigInteger)
+    origin_action_key: Mapped[str | None] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(255))
+    board_status: Mapped[str] = mapped_column(String(16))
+    category: Mapped[str | None] = mapped_column(String(64))
+    source: Mapped[str | None] = mapped_column(String(128))
+    note: Mapped[str | None] = mapped_column(Text)
+    is_waiting: Mapped[bool]
+    waiting_note: Mapped[str | None] = mapped_column(Text)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(default=1)
+
+
+class PersonalTaskCheckItem(_PersonalOwned, _PersonalTimestamps, Base):
+    __tablename__ = 'personal_task_check_items'
+    __table_args__ = (
+        ForeignKeyConstraint(['user_id', 'task_id'], ['personal_tasks.user_id', 'personal_tasks.id']),
+        Index('ix_personal_check_item_task_position', 'user_id', 'task_id', 'position'),
+    )
+    task_id: Mapped[int] = mapped_column(BigInteger)
+    label: Mapped[str] = mapped_column(String(255))
+    position: Mapped[int]
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PersonalTaskEvent(_PersonalOwned, Base):
+    __tablename__ = 'personal_task_events'
+    __table_args__ = (
+        ForeignKeyConstraint(['user_id', 'task_id'], ['personal_tasks.user_id', 'personal_tasks.id']),
+        Index('ix_personal_task_event_owner_time', 'user_id', 'occurred_at'),
+        CheckConstraint(
+            "event_type IN ('created','state_changed','due_changed','archived','restored')",
+            name='ck_personal_task_event_type',
+        ),
+    )
+    task_id: Mapped[int] = mapped_column(BigInteger)
+    event_type: Mapped[str] = mapped_column(String(24))
+    before_data: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    after_data: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class PersonalTaskReminder(_PersonalOwned, Base):
+    __tablename__ = 'personal_task_reminders'
+    __table_args__ = (
+        ForeignKeyConstraint(['user_id', 'task_id'], ['personal_tasks.user_id', 'personal_tasks.id']),
+        CheckConstraint("kind IN ('start','follow_up')", name='ck_personal_reminder_kind'),
+        CheckConstraint("state IN ('scheduled','available','cancelled')", name='ck_personal_reminder_state'),
+        Index('ix_personal_reminder_owner_state_fire', 'user_id', 'state', 'fire_at'),
+        Index('ix_personal_reminder_task', 'user_id', 'task_id', 'kind', 'id'),
+        Index(
+            'uq_personal_reminder_scheduled', 'user_id', 'task_id', 'kind',
+            unique=True, postgresql_where=text("state = 'scheduled'"),
+        ),
+    )
+    task_id: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(16))
+    state: Mapped[str] = mapped_column(String(16))
+    fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 

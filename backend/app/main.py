@@ -29,6 +29,7 @@ from app.api.chat import router as chat_router
 from app.api.events import router as events_router
 from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
+from app.api.personal import router as personal_router
 from app.api.reports import router as reports_router
 from app.auth import AuthMiddleware, load_or_create_secret
 from app.config import Settings
@@ -109,7 +110,8 @@ async def lifespan(app: FastAPI):
                        context_max_lines=settings.context_max_lines,
                        tool_cache=tool_cache,
                        cacheable_tools=CACHEABLE_TOOLS,
-                       sensitive_terms=settings.sensitive_terms)
+                       sensitive_terms=settings.sensitive_terms, intent_model=model,
+                       intent_timeout=min(settings.model_timeout_seconds, 15))
     app.state.settings = settings
     app.state.db = db
     from app.services.coordination import Coordinator
@@ -117,6 +119,7 @@ async def lifespan(app: FastAPI):
     app.state.auth_secret = auth_secret
     app.state.checkpointer = checkpointer
     app.state.graph = graph
+    app.state.personal_review_model = model
     app.state.tool_cache = tool_cache
     app.state.embedding_client = embedding_client
     # 对话摘要（递进摘要/滑动窗口）：在续轮历史裁剪时增量合并被挤出的消息
@@ -167,6 +170,7 @@ app.include_router(cards_router)
 app.include_router(events_router)
 app.include_router(memory_router)
 app.include_router(reports_router)
+app.include_router(personal_router)
 app.include_router(knowledge_router)
 
 

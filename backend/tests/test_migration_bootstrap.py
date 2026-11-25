@@ -34,9 +34,12 @@ async def test_empty_database_upgrade_and_repeat():
         fresh = create_async_engine(target_url, poolclass=NullPool)
         try:
             async with fresh.connect() as connection:
-                assert (await connection.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '45b230ab0021'
+                assert (await connection.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '52da146a0310'
                 for table in ('knowledge_documents', 'knowledge_chunks', 'agent_inputs', 'agent_decisions',
-                              'bill_import_jobs', 'bill_import_rows', 'bill_refund_links'):
+                              'bill_import_jobs', 'bill_import_rows', 'bill_refund_links',
+                              'personal_tasks', 'personal_task_check_items', 'personal_task_events',
+                              'personal_task_reminders', 'personal_goals', 'personal_goal_milestones',
+                              'personal_goal_progress_entries', 'personal_reviews'):
                     assert (await connection.execute(text('SELECT to_regclass(:name)'), {'name': table})).scalar_one()
                 columns = set((await connection.execute(text(
                     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' "

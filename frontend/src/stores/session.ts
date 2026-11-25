@@ -19,6 +19,7 @@ export interface ApprovalState {
   approvalId: string
   tool: string
   args: Record<string, unknown>
+  message?: string
 }
 
 export interface ChatTurn {
@@ -170,6 +171,7 @@ export const useSessionStore = defineStore("session", () => {
           approvalId: String(event.payload.approval_id ?? ""),
           tool: String(event.payload.tool ?? ""),
           args: (event.payload.args as Record<string, unknown>) ?? {},
+          message: typeof event.payload.message === "string" ? event.payload.message : undefined,
         }
         break
       case "approval_error":

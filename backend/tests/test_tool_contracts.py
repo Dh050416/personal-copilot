@@ -51,7 +51,8 @@ def test_tool_description_comes_from_docstring(ctx):
 def test_write_tool_governance_markers():
     assert WRITE_TOOLS == frozenset(
         {'add_bill', 'create_tracking_card', 'complete_tracking_card', 'create_cards_from_query',
-         'create_event', 'complete_event', 'update_event'})
+         'create_event', 'complete_event', 'update_event', 'create_personal_task', 'update_personal_task',
+         'record_goal_progress', 'save_personal_review'})
     assert TOOL_PERMISSIONS == {
         'add_bill': ('billing:bill:create',),
         'create_tracking_card': ('billing:card:create',),
@@ -60,6 +61,10 @@ def test_write_tool_governance_markers():
         'create_event': ('schedule:event:create',),
         'complete_event': ('schedule:event:complete',),
         'update_event': ('schedule:event:update',),
+        'create_personal_task': ('personal:task:create',),
+        'update_personal_task': ('personal:task:update',),
+        'record_goal_progress': ('personal:goal:progress',),
+        'save_personal_review': ('personal:review:save',),
     }
 
 

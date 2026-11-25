@@ -1,0 +1,75 @@
+.personal-area { display: grid; gap: 22px; }
+.personal-header, .personal-toolbar, .personal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.personal-header, .personal-toolbar { justify-content: space-between; }
+.personal-header h1 { font-size: clamp(22px, 3vw, 27px); font-weight: 700; }
+.personal-area h2 { font-size: 18px; }
+.personal-tabs {
+  display: flex;
+  gap: 22px;
+  border-bottom: 1px solid var(--border);
+}
+.personal-tabs a {
+  text-decoration: none;
+  color: var(--text-2);
+  padding: 0 1px 10px;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.personal-tabs a.router-link-active {
+  color: var(--text-1);
+  border-bottom-color: var(--primary);
+  font-weight: 650;
+}
+.personal-reminders { position: relative; }
+.personal-reminders summary { list-style: none; display: flex; gap: 7px; align-items: center; }
+.personal-reminders summary::-webkit-details-marker { display: none; }
+.personal-reminders summary svg { width: 15px; height: 15px; }
+.personal-reminder-panel {
+  position: absolute;
+  z-index: 5;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(365px, calc(100vw - 88px));
+  max-height: min(65vh, 470px);
+  overflow: auto;
+  box-shadow: 0 6px 20px #18181b12;
+  padding: 14px;
+}
+.personal-reminder-row {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.personal-reminder-row a, .personal-link { color: var(--text-1); text-underline-offset: 3px; }
+.personal-reminder-row small { display: block; color: var(--text-2); }
+.personal-reminder-row button { flex-shrink: 0; padding-inline: 7px; }
+.personal-page, .personal-form { display: grid; align-content: start; gap: 15px; min-width: 0; }
+.personal-field { display: grid; align-content: start; gap: 5px; min-width: 0; font-weight: 550; }
+.personal-field .input, .personal-field .select, .personal-field .textarea { font-weight: 400; min-width: 0; }
+.personal-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.personal-muted { color: var(--text-2); font-size: 13px; }
+.personal-error { color: #991b1b; background: var(--danger-weak); border-radius: 6px; padding: 9px 12px; }
+.personal-success { color: #166534; }
+.personal-error, .personal-success { margin: 0; font-size: 13px; }
+.personal-empty { padding: 26px 16px; text-align: center; color: var(--text-2); }
+.personal-toggle { display: inline-flex; align-items: center; gap: 7px; }
+.personal-toggle input { accent-color: var(--primary); }
+.personal-actions .input { width: auto; min-width: 0; max-width: 100%; }
+.personal-dialog { box-sizing: border-box; }
+.personal-dialog :focus-visible, .personal-area :focus-visible {
+  outline: 2px solid #52525b;
+  outline-offset: 2px;
+}
+@media (max-width: 620px) {
+  .personal-area { gap: 16px; }
+  .personal-tabs { gap: 14px; }
+  .personal-pair { grid-template-columns: minmax(0, 1fr); }
+}

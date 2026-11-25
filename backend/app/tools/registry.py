@@ -1,11 +1,13 @@
 """Static tool registry: domain factories plus centrally declared execution policies."""
 
 from app import schemas
+from app.personal_schemas import ProgressResult, ReviewView, TaskView
 from app.tools.bill import build_bill_tools
 from app.tools.cards import build_cards_tools
 from app.tools.definitions import ToolDefinition
 from app.tools.knowledge import build_knowledge_tools
 from app.tools.memory import build_memory_tools
+from app.tools.personal import PersonalGoalList, PersonalReviewContext, PersonalTaskList, build_personal_tools
 from app.tools.schedule import build_schedule_tools
 from app.tools.search import build_search_tools
 
@@ -55,6 +57,13 @@ DEFINITIONS = (
     ToolDefinition(
         "search_knowledge", schemas.KnowledgeSearchResult, write=False, cacheable=True, permissions=()
     ),
+    ToolDefinition('find_personal_tasks', PersonalTaskList),
+    ToolDefinition('find_personal_goals', PersonalGoalList),
+    ToolDefinition('get_personal_review_context', PersonalReviewContext),
+    ToolDefinition('create_personal_task', TaskView, write=True, permissions=('personal:task:create',)),
+    ToolDefinition('update_personal_task', TaskView, write=True, permissions=('personal:task:update',)),
+    ToolDefinition('record_goal_progress', ProgressResult, write=True, permissions=('personal:goal:progress',)),
+    ToolDefinition('save_personal_review', ReviewView, write=True, permissions=('personal:review:save',)),
 )
 
 TOOL_DEFINITIONS = {definition.name: definition for definition in DEFINITIONS}
@@ -75,6 +84,7 @@ def build_tools(db, embedding_client=None):
         build_search_tools,
         build_schedule_tools,
         build_knowledge_tools,
+        build_personal_tools,
     ):
         for tool in factory(db, embedding_client):
             if tool.name in registered:

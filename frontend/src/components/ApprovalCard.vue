@@ -37,11 +37,37 @@ const FIELD_LABELS: Record<string, string> = {
   edited_args: "修改后参数",
   decision: "决定",
   url: "链接",
+  task_id: "个人任务 ID",
+  goal_id: "目标 ID",
+  version: "记录版本",
+  due_at: "截止时间",
+  reminder_at: "开工提醒",
+  follow_up_at: "跟进提醒",
+  board_status: "任务状态",
+  value: "数值",
+  unit: "单位",
+  operation: "更新方式",
+  percent: "进度百分比",
+  milestone_id: "里程碑 ID",
+  completed: "是否完成",
+  day: "复盘周期日期",
+  timezone: "时区",
+  final_text: "复盘正文",
 }
 
 /** 仅对语义明确的字段做值翻译，避免把任意字符串误改 */
 const FIELD_VALUE_LABELS: Record<string, Record<string, string>> = {
   direction: { expense: "支出", income: "收入" },
+  board_status: { inbox: "收件箱", todo: "待做", doing: "进行中", done: "已完成" },
+  operation: { add: "增加", set: "更正为" },
+  kind: { metric: "量化累计", manual: "手动百分比", milestone: "里程碑", week: "周复盘", month: "月复盘" },
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  create_personal_task: "创建个人任务",
+  update_personal_task: "更新个人任务",
+  record_goal_progress: "记录目标进度",
+  save_personal_review: "保存复盘",
 }
 
 interface ParamRow {
@@ -107,7 +133,7 @@ function reject(): void {
         </span>
         <div class="approval-heading">
           <h2 id="approval-heading">需要你确认</h2>
-          <p>管家准备执行一项写操作，请核对参数后决定。</p>
+          <p>{{ store.approval.message || "管家准备执行一项写操作，请核对参数后决定。" }}</p>
         </div>
         <span class="approval-step">待确认</span>
       </header>
@@ -115,7 +141,7 @@ function reject(): void {
       <div class="approval-body">
         <div class="tool-line">
           <span class="field-label">调用工具</span>
-          <code class="tool-chip">{{ store.approval.tool }}</code>
+          <code class="tool-chip">{{ TOOL_LABELS[store.approval.tool] ?? store.approval.tool }}</code>
         </div>
 
         <div class="params-head">

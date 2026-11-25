@@ -1,9 +1,24 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, onMounted, onUnmounted } from "vue"
 import { useRouter } from "vue-router"
 import { getCurrentUser, logout } from "../services/agentClient"
+import { usePersonalReminders } from "../stores/personalReminders"
 
 const router = useRouter()
+const reminders = usePersonalReminders()
+let reminderTimer: number | undefined
+
+onMounted(() => {
+  void reminders.refresh()
+  reminderTimer = window.setInterval(reminders.refresh, 45_000)
+  window.addEventListener("focus", reminders.refresh)
+})
+
+onUnmounted(() => {
+  window.clearInterval(reminderTimer)
+  window.removeEventListener("focus", reminders.refresh)
+  reminders.reset()
+})
 
 const username = computed(() => getCurrentUser()?.username ?? "")
 
@@ -19,6 +34,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/", label: "对话", icon: "chat" },
       { to: "/board", label: "看板", icon: "board" },
+      { to: "/personal/tasks", label: "个人规划", icon: "personal" },
       { to: "/calendar", label: "日历", icon: "calendar" },
     ],
   },
@@ -44,6 +60,7 @@ const ICONS: Record<string, string> = {
   bills: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   reports: '<path d="M4 20V10M10 20V4M16 20v-8"/><path d="M3 20h18"/>',
   calendar: '<rect x="4" y="6" width="16" height="14" rx="2"/><path d="M4 10h16M8 4v4M16 4v4"/>',
+  personal: '<path d="M12 21v-8m0 4c-4 0-7-3-7-7 4 0 7 3 7 7zm0-4c0-4 3-7 7-7 0 4-3 7-7 7zM5 21h14"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
   knowledge: '<path d="M4 4h6l2 2h8v12H4z"/><path d="M8 12h8M8 16h5"/>',
 }
@@ -67,6 +84,7 @@ const avatarLetter = computed(() => (username.value || "U").charAt(0).toUpperCas
           :key="item.to"
           :to="item.to"
           class="nav-item"
+          :class="{ 'personal-active': item.icon === 'personal' && $route.path.startsWith('/personal/') }"
         >
           <svg
             class="nav-icon"
@@ -79,6 +97,8 @@ const avatarLetter = computed(() => (username.value || "U").charAt(0).toUpperCas
             v-html="ICONS[item.icon]"
           ></svg>
           <span>{{ item.label }}</span>
+          <span v-if="item.icon === 'personal' && reminders.items.length" class="reminder-count"
+            :aria-label="reminders.items.length + ' 条未读提醒'">{{ reminders.items.length }}</span>
         </RouterLink>
       </template>
     </nav>
@@ -164,9 +184,18 @@ const avatarLetter = computed(() => (username.value || "U").charAt(0).toUpperCas
   color: var(--text-1);
 }
 
-.nav-item.router-link-active {
+.nav-item.router-link-active, .nav-item.personal-active {
   background: var(--accent);
   color: #fff;
+}
+
+.reminder-count {
+  margin-left: auto;
+  border-radius: 20px;
+  padding: 0 7px;
+  font-size: 11px;
+  background: var(--warning-weak);
+  color: #854d0e;
 }
 
 .nav-icon {
@@ -227,6 +256,22 @@ const avatarLetter = computed(() => (username.value || "U").charAt(0).toUpperCas
 
 .logout-btn:hover {
   color: var(--danger);
+}
+
+@media (max-width: 620px) {
+  .sidebar { width: 54px; padding: 14px 6px; }
+  .logo, .nav-item { justify-content: center; }
+  .logo { padding: 4px 0 12px; }
+  .logo-text, .nav-section, .nav-item > span:not(.reminder-count), .user-name {
+    position: absolute;
+    clip-path: inset(50%);
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .nav-item { position: relative; padding: 10px 0; }
+  .reminder-count { position: absolute; top: 0; right: 0; margin: 0; padding: 0 4px; }
+  .sidebar-footer { flex-direction: column; padding: 9px 0 0; }
 }
 
 /* 窄屏：侧栏隐藏，由顶部简易导航兜底（此处仅隐藏，保持各页面可访问） */

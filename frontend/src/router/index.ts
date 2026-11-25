@@ -15,6 +15,15 @@ const router = createRouter({
     { path: "/login", name: "login", component: LoginView, meta: { public: true } },
     { path: "/", name: "chat", component: ChatView },
     { path: "/board", name: "board", component: BoardView },
+    {
+      path: "/personal", component: () => import("../views/PersonalView.vue"),
+      children: [
+        { path: "", redirect: { name: "personal-tasks" } },
+        { path: "tasks", name: "personal-tasks", component: () => import("../views/PersonalTasks.vue") },
+        { path: "goals", name: "personal-goals", component: () => import("../views/PersonalGoals.vue") },
+        { path: "reviews", name: "personal-reviews", component: () => import("../views/PersonalReviews.vue") },
+      ],
+    },
     { path: "/bills", name: "bills", component: BillsView },
     { path: "/reports", name: "reports", component: ReportsView },
     { path: "/calendar", name: "calendar", component: CalendarView },

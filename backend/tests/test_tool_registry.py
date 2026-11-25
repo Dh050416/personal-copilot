@@ -9,7 +9,7 @@ from app.tools.context import _USER_ID, current_user_id
 def test_all_registered_tools_have_execution_contracts():
     tools = build_tools(db=None)
     names = [tool.name for tool in tools]
-    assert len(names) == len(set(names)) == 13
+    assert len(names) == len(set(names)) == 20
     assert set(names) == set(OUTPUT_SCHEMAS) == set(registry.TOOL_DEFINITIONS)
     assert "add_bill" in names and "add_bill" in WRITE_TOOLS
     assert not WRITE_TOOLS & CACHEABLE_TOOLS

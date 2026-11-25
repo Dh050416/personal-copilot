@@ -36,6 +36,7 @@ export interface ToolExecutionEnvelope {
 
 export type AgentEventType =
   | "intent_route"
+  | "intent_classified"
   | "tool_call_proposal"
   | "plan"
   | "arguments_validated"
