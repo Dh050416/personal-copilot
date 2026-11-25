@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from sqlalchemy import func, select
 
 from app.agent.graph import initial_input, make_graph
-from app.agent.intent import Intent, classify_intent
+from app.agent.intent import Intent, classify_intent, match_rule
 from app.data.models import PersonalReview, PersonalTask, User
 from app.personal_schemas import GoalCreate, MetricProgress, TaskCreate
 from app.services.personal_goals import create_goal, record_goal_progress
@@ -92,7 +92,11 @@ async def test_create_personal_task_requires_approval_and_replays(personal_db):
         assert await session.scalar(select(func.count(PersonalTask.id))) == 1
 
 
-async def test_spoken_goal_progress_uses_lookup_and_preview(personal_db):
+@pytest.mark.parametrize(('utterance', 'source'), [
+    ('我今天又跑了5公里', 'rule'),
+    ('今天跑了五公里', 'model'),
+])
+async def test_spoken_goal_progress_uses_lookup_and_preview(personal_db, utterance, source):
     async with personal_db.sessions.begin() as session:
         goal = await create_goal(session, TEST_USER_ID, GoalCreate(
             title='年度跑步计划', progress_mode='metric', target_value=100, unit='公里',
@@ -100,7 +104,8 @@ async def test_spoken_goal_progress_uses_lookup_and_preview(personal_db):
         goal, _ = await record_goal_progress(session, TEST_USER_ID, goal.id, MetricProgress(
             version=goal.version, kind='metric', request_key='seed-run', value=68,
         ))
-    router = RouterModel(decision('personal', 'record_goal_progress', entity='跑步', amount=5, unit='公里'))
+    routes = [decision('personal', 'record_goal_progress', entity='跑步', amount=5, unit='公里')]
+    router = RouterModel(*(routes if source == 'model' else []))
     graph = hybrid(
         personal_db, router,
         tool_call_message('find_personal_goals', {'query': '跑步'}, 'find-running'),
@@ -110,15 +115,24 @@ async def test_spoken_goal_progress_uses_lookup_and_preview(personal_db):
         AIMessage(content='本次已记录。'),
     )
     config = {'configurable': {'thread_id': 'progress-personal'}}
-    result = await graph.ainvoke(initial_input('progress-personal', '今天跑了5公里'), config)
+    result = await graph.ainvoke(initial_input('progress-personal', utterance), config)
     payload = interrupted_payload(result)
     assert payload['tool'] == 'record_goal_progress'
     assert '68% 更新到 73%' in payload['message']
     result = await run_to_end(graph, resume('approve', payload['approval_id']), config)
+    assert bool(router.requests) == (source == 'model')
+    assert result['intent_source'] == source and result['intent']['hints']['amount'] == 5
     data = next(event['payload']['result']['data'] for event in result['events']
                 if event['type'] == 'tool_result' and event['payload']['tool'] == 'record_goal_progress')
     assert data['goal']['progress_percent'] == '73.00'
     assert data['entry']['before_data']['progress_percent'] == '68.00'
+
+
+@pytest.mark.parametrize('text', [
+    '明天想跑5公里', '我今天没跑5公里', '我今天又跑了5公里吗？', '我朋友今天跑了5公里',
+])
+def test_run_shortcut_leaves_other_statements_to_semantic_routing(text):
+    assert match_rule(text) is None
 
 
 async def test_spoken_task_completion_resolves_database_record(personal_db):

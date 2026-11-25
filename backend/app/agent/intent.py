@@ -64,6 +64,12 @@ RULES = (
     (r'(?:请)?(?:帮我)?(?:查看|看一下|列出)(?:我的)?长期目标[。！!\s]*', 'personal', 'query_personal_goals'),
 )
 
+RUN_PROGRESS_RULE = re.compile(
+    r'(?:我\s*)?(?P<date>今天|今早|今晨|今晚|刚才|刚刚)?\s*(?:又|刚|已经|也)?\s*'
+    r'跑(?:步)?(?:了|完了)\s*(?P<amount>[0-9]{1,14}(?:\.[0-9]{1,4})?)\s*'
+    r'(?:公里|千米|km|k)[。！!.\s]*',
+    re.IGNORECASE,
+)
 
 ROUTER_PROMPT = (
     '你是个人助理的路由器。判断当前用户消息的目的，只输出一个 JSON 对象，'
@@ -85,8 +91,14 @@ ROUTER_PROMPT = (
 
 
 def match_rule(text: str) -> Intent | None:
+    text = text.strip()
+    run = RUN_PROGRESS_RULE.fullmatch(text)
+    if run and float(run['amount']) > 0:
+        return Intent(domain='personal', action='record_goal_progress', hints=IntentHints(
+            entity='跑步', date=run['date'], amount=float(run['amount']), unit='公里',
+        ))
     for pattern, domain, action in RULES:
-        match = re.fullmatch(pattern, text.strip(), flags=re.IGNORECASE)
+        match = re.fullmatch(pattern, text, flags=re.IGNORECASE)
         if match:
             return Intent.model_validate({'domain': domain, 'action': action, 'hints': match.groupdict()})
     return None
